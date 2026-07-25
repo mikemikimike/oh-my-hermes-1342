@@ -91,16 +91,6 @@ hermes skills tap add rlaope/oh-my-hermes
 hermes skills install rlaope/oh-my-hermes/skills/oh-my-hermes --yes
 ```
 
-<br>
-
-**Then ask Hermes normally:**
-
-```text
-I want to safely add a feature to this repo.
-```
-
-<br>
-
 **or ask Your AI Agent:**
 
 ```text
