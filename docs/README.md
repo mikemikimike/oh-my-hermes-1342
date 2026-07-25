@@ -15,8 +15,8 @@ merge readiness, or a merge.
 
 ## Who Runs What
 
-People normally talk to Hermes and use only three OMH maintenance commands:
-`omh setup`, `omh update`, and `omh doctor`. Coding, research, creation,
+People normally talk to Hermes and use only two OMH maintenance commands:
+`omh setup` and `omh update`. Coding, research, creation,
 operations, and memory requests should begin as natural-language requests to
 Hermes.
 
@@ -50,7 +50,7 @@ Hermes memory, skills, tools, gateway surfaces, and OMH's role, see the
 
 ## Six Capability Families
 
-The public front door groups **82 installable skills** by user intent. Exact
+The public front door groups **88 installable skills** by user intent. Exact
 skill names remain available for deterministic routing, wrapper rendering, and
 operator control.
 
@@ -72,7 +72,7 @@ Use [Capabilities](CAPABILITIES.md) for the manifest contract and
 - Wrapper UX should present actions, status, and evidence states without making
   normal chat users run backend commands.
 - User quick starts should foreground natural-language Hermes requests plus
-  `omh setup`, `omh update`, and `omh doctor`; broader CLI examples require an
+  `omh setup` and `omh update`; broader CLI examples require an
   explicit agent, wrapper, operator, or maintainer label.
 - Coding-heavy requests stay executor-neutral until a coding owner is selected.
 - Wrapper sessions own chat continuity and plan decisions. Linked runtime runs

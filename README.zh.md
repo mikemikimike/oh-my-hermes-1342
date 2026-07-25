@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/oh-my-hermes-wordmark.png" alt="OH-MY-HERMES" width="100%" style="display:block;max-width:none;height:auto">
+</p>
+
 # oh-my-hermes
 
 <p align="center">
@@ -11,6 +15,12 @@
   <a href="https://github.com/rlaope/oh-my-hermes"><img alt="GitHub" src="https://img.shields.io/badge/github-rlaope%2Foh--my--hermes-181717?logo=github"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
+  <a href="https://github.com/NousResearch/hermes-agent"><img alt="Hermes Agent" src="https://img.shields.io/badge/Hermes%20Agent-NousResearch-6f42c1?logo=github"></a>
+  <a href="https://github.com/rlaope/oh-my-hermes"><img alt="OMH stars" src="https://img.shields.io/github/stars/rlaope/oh-my-hermes?style=flat&logo=github"></a>
+  <a href="https://github.com/NousResearch/hermes-agent"><img alt="Hermes Agent stars" src="https://img.shields.io/github/stars/NousResearch/hermes-agent?style=flat&logo=github"></a>
+  <a href="https://github.com/rlaope/oh-my-hermes/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/rlaope/oh-my-hermes/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/rlaope/oh-my-hermes/actions/workflows/pages.yml"><img alt="GitHub Pages" src="https://github.com/rlaope/oh-my-hermes/actions/workflows/pages.yml/badge.svg"></a>
+  <a href="https://github.com/rlaope/oh-my-hermes/issues"><img alt="GitHub issues" src="https://img.shields.io/github/issues/rlaope/oh-my-hermes?logo=github"></a>
   <img alt="Status" src="https://img.shields.io/badge/status-1.0.2%20stable-blue">
 </p>
 
@@ -42,40 +52,54 @@
 [Capabilities](docs/CAPABILITIES.md) ·
 [Capability Impact](docs/CAPABILITY_IMPACT.md)
 
+> [!NOTE]
+> OMH 保留 Hermes 作为自然语言入口，并增加具有明确证据边界的专业工作层。
+>
+> <p align="center">
+>   <img src="assets/hermes-omh-terminal-orchestration.png" alt="Hermes Agent and OH-MY-HERMES working side by side" width="1080">
+> </p>
+>
+> <p align="center">
+>   <img src="assets/friren-agent-omh-callout.png" alt="Friren Agent explaining OMH in Art&Engine" width="720">
+> </p>
+
 ## 快速开始
+
+**安装本地命令和受管理的 skill：**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh | sh
 omh setup
-omh doctor
 ```
 
-Hermes skill tap：
+<br>
+
+**Hermes skill tap：**
 
 ```sh
 hermes skills tap add rlaope/oh-my-hermes
 hermes skills install rlaope/oh-my-hermes/skills/oh-my-hermes --yes
 ```
 
-普通用户通常只需要直接使用三个 OMH 命令：
+<br>
 
-- `omh setup`：连接或修复 OMH。
-- `omh update`：更新 OMH 和受管理的 skill。
-- `omh doctor`：检查状态并获得下一步修复建议。
-
-其他工作从向 Hermes 提出自然语言请求开始。`omh coding`、`omh runtime`、
-`omh chat`、`omh memory` 等命令主要是 Hermes Agent、wrapper、编码 agent 和
-maintainer 使用的 control plane，而不是普通用户需要记忆的操作流程。
-
-之后像往常一样向 Hermes 提出请求：
+**然后像往常一样向 Hermes 提出请求：**
 
 ```text
-Use OMH request-to-handoff for: I want to safely add a feature to this repo.
+我想安全地为这个仓库添加一个功能。
+```
+
+<br>
+
+**或者向 Your AI Agent 提出请求：**
+
+```text
+Hey Agent, Install this >> https://github.com/rlaope/oh-my-hermes <<
 ```
 
 ## OMH 提供什么
 
-OMH 将 **82 个**可安装的 workflow skill 组织为6个容易理解的能力族。
+OMH 将 **88 个**可安装的 workflow skill 组织为6个容易理解的能力族。
 
 | 能力族 | Hermes 可以做得更好的事情 |
 | --- | --- |

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/oh-my-hermes-wordmark.png" alt="OH-MY-HERMES" width="100%" style="display:block;max-width:none;height:auto">
+</p>
+
 # oh-my-hermes
 
 <p align="center">
@@ -11,6 +15,12 @@
   <a href="https://github.com/rlaope/oh-my-hermes"><img alt="GitHub" src="https://img.shields.io/badge/github-rlaope%2Foh--my--hermes-181717?logo=github"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
+  <a href="https://github.com/NousResearch/hermes-agent"><img alt="Hermes Agent" src="https://img.shields.io/badge/Hermes%20Agent-NousResearch-6f42c1?logo=github"></a>
+  <a href="https://github.com/rlaope/oh-my-hermes"><img alt="OMH stars" src="https://img.shields.io/github/stars/rlaope/oh-my-hermes?style=flat&logo=github"></a>
+  <a href="https://github.com/NousResearch/hermes-agent"><img alt="Hermes Agent stars" src="https://img.shields.io/github/stars/NousResearch/hermes-agent?style=flat&logo=github"></a>
+  <a href="https://github.com/rlaope/oh-my-hermes/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/rlaope/oh-my-hermes/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/rlaope/oh-my-hermes/actions/workflows/pages.yml"><img alt="GitHub Pages" src="https://github.com/rlaope/oh-my-hermes/actions/workflows/pages.yml/badge.svg"></a>
+  <a href="https://github.com/rlaope/oh-my-hermes/issues"><img alt="GitHub issues" src="https://img.shields.io/github/issues/rlaope/oh-my-hermes?logo=github"></a>
   <img alt="Status" src="https://img.shields.io/badge/status-1.0.2%20stable-blue">
 </p>
 
@@ -43,41 +53,55 @@
 [Capabilities](docs/CAPABILITIES.md) ·
 [Capability Impact](docs/CAPABILITY_IMPACT.md)
 
+> [!NOTE]
+> OMH는 Hermes를 자연어 표면으로 유지하고 명확한 증거 경계를 갖춘 전문 운영층을
+> 추가합니다.
+>
+> <p align="center">
+>   <img src="assets/hermes-omh-terminal-orchestration.png" alt="Hermes Agent and OH-MY-HERMES working side by side" width="1080">
+> </p>
+>
+> <p align="center">
+>   <img src="assets/friren-agent-omh-callout.png" alt="Friren Agent explaining OMH in Art&Engine" width="720">
+> </p>
+
 ## 빠른 시작
+
+**로컬 명령과 관리형 skill을 설치합니다:**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh | sh
 omh setup
-omh doctor
 ```
 
-Hermes skill tap 경로:
+<br>
+
+**Hermes skill tap 경로:**
 
 ```sh
 hermes skills tap add rlaope/oh-my-hermes
 hermes skills install rlaope/oh-my-hermes/skills/oh-my-hermes --yes
 ```
 
-일반 사용자가 직접 사용할 OMH 명령은 보통 세 가지입니다.
+<br>
 
-- `omh setup`: OMH를 연결하거나 설정을 복구합니다.
-- `omh update`: OMH와 관리형 skill을 최신화합니다.
-- `omh doctor`: 상태를 점검하고 다음 복구 방법을 확인합니다.
-
-그 밖의 작업은 Hermes에 자연어로 요청하면 됩니다. `omh coding`, `omh
-runtime`, `omh chat`, `omh memory` 같은 명령은 주로 Hermes Agent, wrapper,
-코딩 에이전트, 유지관리자가 내부적으로 사용하는 제어면이며, 일반 사용자가
-외워야 하는 사용법이 아닙니다.
-
-이제 Hermes에 평소처럼 요청하면 됩니다.
+**그런 다음 Hermes에 평소처럼 요청합니다:**
 
 ```text
-Use OMH request-to-handoff for: I want to safely add a feature to this repo.
+이 저장소에 안전하게 기능을 추가하고 싶습니다.
+```
+
+<br>
+
+**또는 Your AI Agent에게 요청합니다:**
+
+```text
+Hey Agent, Install this >> https://github.com/rlaope/oh-my-hermes <<
 ```
 
 ## OMH가 더하는 것
 
-OMH는 **82개**의 설치형 workflow skill을 사람이 이해하기 쉬운 6개 기능군으로
+OMH는 **88개**의 설치형 workflow skill을 사람이 이해하기 쉬운 6개 기능군으로
 제공합니다.
 
 | 기능군 | Hermes가 더 잘할 수 있는 일 |
