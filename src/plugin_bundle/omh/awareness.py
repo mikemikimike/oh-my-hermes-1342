@@ -5262,7 +5262,15 @@ def awareness_primer_context() -> str:
             str(payload["first_turn_rule"]),
             "Use message-specific route hints when present; they should outrank this always-on rail.",
             "Boundary: " + str(payload["evidence_boundary"]),
-            "Expand only when needed with omh_context, omh_capabilities, and omh_status/omh_hud.",
+            # `tool_hints` in the context brief is not this rail: `pre_llm_call`
+            # injects `payload["context"]` and nothing else, so a hint recorded
+            # only there never reaches the model. Measured: with the hint in
+            # `tool_hints` alone, a "remember this" turn called Hermes' native
+            # `memory` tool directly and omh_memory zero times.
+            (
+                "Expand only when needed with omh_context, omh_capabilities, and omh_status/omh_hud; "
+                "check omh_memory before writing Hermes memory."
+            ),
         ]
     )
 

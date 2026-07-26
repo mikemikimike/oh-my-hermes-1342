@@ -26,7 +26,7 @@ from _local_package import load_local_package
 load_local_package()
 from omh.maintenance import advisory
 from omh.maintenance.advisory import MEMORY_STALE_AFTER_DAYS, check_hermes_memory_staleness
-from omh.maintenance.hermes_memory import (
+from omh.plugin_bundle.omh.hermes_memory import (
     HERMES_MEMORY_DELIMITER,
     MEMORY_FILE_CAP_CHARS,
     memory_char_count,
@@ -235,7 +235,7 @@ class MemoryToolTests(unittest.TestCase):
             root = Path(tmp).resolve()
             _write_memory(root / ".hermes", "커피 원두는 밀봉 용기에 보관한다")
             payload = self._payload(root)
-            self.assertEqual(payload["source_backend"], "package_memory")
+            self.assertEqual(payload["source_backend"], "bundle_memory")
             self.assertEqual(payload["schema_version"], "hermes_memory_bridge/v1")
             self.assertEqual(payload["plugin_tool"], "omh_memory")
 
@@ -246,14 +246,16 @@ class MemoryToolTests(unittest.TestCase):
             _write_memory(root / ".hermes", secret)
             self.assertNotIn(secret, json.dumps(self._payload(root), ensure_ascii=False))
 
-    def test_a_package_failure_is_not_labelled_as_a_missing_package(self) -> None:
+    def test_a_read_failure_stays_distinguishable_from_an_empty_comparison(self) -> None:
         with patch(
-            "omh.memory.build_hermes_memory_bridge", side_effect=RuntimeError("boom")
+            "omh.plugin_bundle.omh.tools.memory_tool.build_hermes_memory_bridge",
+            side_effect=RuntimeError("boom"),
         ):
             payload = json.loads(omh_memory_handler({}))
-        # Reusing the standalone-fallback label here would make a real failure
-        # indistinguishable from a host that never had OMH installed.
-        self.assertEqual(payload["source_backend"], "package_memory_error")
+        # Answering with an empty comparison would read as "Hermes remembers
+        # nothing" when the truth is that OMH could not read the file.
+        self.assertEqual(payload["source_backend"], "bundle_memory_error")
         self.assertEqual(payload["status"], "unavailable")
         self.assertEqual(payload["reason"], "RuntimeError")
         self.assertIn("not evidence", payload["claim_boundary"])
+        self.assertNotIn("boom", json.dumps(payload))

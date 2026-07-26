@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from omh.maintenance import advisory
 from omh.maintenance.advisory import (
@@ -18,6 +19,7 @@ from omh.maintenance.advisory import (
     check_hermes_memory_staleness,
     check_installed_skill_context_weight,
     check_legacy_plan_artifacts,
+    check_orphaned_project_scope_store,
     check_soul_missing_or_starter,
     run_config_advisories,
 )
@@ -30,6 +32,7 @@ ADVISORY_CHECK_IDS = {
     "soul_missing_or_starter",
     "hermes_memory_staleness",
     "legacy_plan_artifacts",
+    "orphaned_project_scope_store",
     "installed_skill_context_weight",
 }
 
@@ -215,6 +218,68 @@ class LegacyPlanArtifactTests(unittest.TestCase):
         self.assertTrue((home / "plans" / "old.md").exists())
 
 
+class OrphanedProjectScopeStoreTests(unittest.TestCase):
+    """`--scope project` moved its anchor to the repository root in #676.
+
+    A store installed from a subdirectory before that is now unreachable. This
+    check is the exact inverse of the change, so it must fire for that case and
+    stay quiet for every other shape.
+    """
+
+    def _repo(self, root: Path) -> Path:
+        (root / ".git").mkdir(parents=True)
+        return root
+
+    def test_a_store_below_the_root_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(Path(tmp).resolve())
+            nested = root / "nested" / "deep"
+            _write(nested / ".omh" / "manifest.json", "{}")
+            entry = check_orphaned_project_scope_store(cwd=nested)
+            self.assertEqual(entry.status, "advice")
+            self.assertIn(str(nested), entry.observed)
+
+    def test_a_store_at_the_root_is_not_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(Path(tmp).resolve())
+            _write(root / ".omh" / "manifest.json", "{}")
+            # The root store is the supported location, not an orphan.
+            self.assertEqual(check_orphaned_project_scope_store(cwd=root).status, "ok")
+
+    def test_a_subdirectory_without_a_store_is_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(Path(tmp).resolve())
+            nested = root / "nested"
+            nested.mkdir()
+            self.assertEqual(check_orphaned_project_scope_store(cwd=nested).status, "ok")
+
+    def test_an_omh_directory_without_a_manifest_is_not_an_install(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(Path(tmp).resolve())
+            nested = root / "nested"
+            # A plans/codegraph store is not a `--scope project` install, and
+            # reporting one would fire on every repository that records a plan.
+            _write(nested / ".omh" / "plans" / "some-plan.md", "# plan\n")
+            self.assertEqual(check_orphaned_project_scope_store(cwd=nested).status, "ok")
+
+    def test_outside_a_repository_there_is_nothing_to_orphan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            plain = Path(tmp).resolve()
+            with mock.patch("omh.maintenance.advisory.find_project_root", return_value=None):
+                self.assertEqual(check_orphaned_project_scope_store(cwd=plain).status, "ok")
+
+    def test_the_remedy_never_offers_to_move_the_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._repo(Path(tmp).resolve())
+            nested = root / "nested"
+            manifest = nested / ".omh" / "manifest.json"
+            _write(manifest, "{}")
+            entry = check_orphaned_project_scope_store(cwd=nested)
+            self.assertIn("OMH will not move it", entry.remediation)
+            self.assertTrue(entry.read_only)
+            self.assertTrue(manifest.exists())
+
+
 class SkillWeightTests(unittest.TestCase):
     def _skills_dir(self, count: int) -> Path:
         skills_dir = Path(tempfile.mkdtemp()) / "skills"
@@ -340,6 +405,8 @@ class MembershipGuardrailTests(unittest.TestCase):
                 # reports ok rather than advice; the firing case is covered in
                 # LegacyPlanArtifactTests.
                 "legacy_plan_artifacts": "ok",
+                # No subdirectory store below a repository root in the fixture home.
+                "orphaned_project_scope_store": "ok",
                 "installed_skill_context_weight": "advice",
             },
         )

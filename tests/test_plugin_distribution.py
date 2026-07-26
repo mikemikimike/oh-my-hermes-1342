@@ -184,6 +184,46 @@ print(json.dumps(observed, ensure_ascii=False))
         self.assertNotIn("package-context-boom", serialized)
         self.assertNotIn("secret-token-123", serialized)
 
+    def test_memory_tool_needs_no_package_and_still_answers(self) -> None:
+        from omh.plugin_bundle.omh.tools import memory_tool
+
+        # The Hermes process cannot import the `omh` package, so a tool that
+        # delegated there answered "package_absent" on the only host it exists
+        # for. Blocking the package must now change nothing: the reader is in
+        # the bundle, which is what makes the tool work at all.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memories = root / ".hermes" / "memories"
+            memories.mkdir(parents=True)
+            (memories / "MEMORY.md").write_text("a remembered fact", encoding="utf-8")
+            env = {"OMH_HOME": str(root / ".omh"), "HERMES_HOME": str(root / ".hermes")}
+
+            with mock.patch.dict(sys.modules, {"omh.memory": None, "omh.paths": None}):
+                with mock.patch.dict(os.environ, env):
+                    payload = json.loads(memory_tool.omh_memory_handler({}))
+
+        self.assertEqual(payload["source_backend"], "bundle_memory")
+        self.assertEqual(payload["schema_version"], "hermes_memory_bridge/v1")
+        self.assertNotIn("status", payload)  # not the unavailable shape
+        self.assertEqual([f["label"] for f in payload["files"]], ["MEMORY.md", "USER.md"])
+        self.assertEqual(payload["files"][0]["chars"], len("a remembered fact"))
+
+    def test_memory_tool_keeps_a_read_failure_apart_from_an_empty_comparison(self) -> None:
+        from omh.plugin_bundle.omh.tools import memory_tool
+
+        with mock.patch.object(
+            memory_tool, "build_hermes_memory_bridge", side_effect=RuntimeError("bundle-memory-boom")
+        ):
+            error_payload = json.loads(memory_tool.omh_memory_handler({}))
+        # Returning an empty comparison here would read as "Hermes remembers
+        # nothing" when OMH simply could not read the file.
+        self.assertEqual(error_payload["source_backend"], "bundle_memory_error")
+        self.assertEqual(error_payload["status"], "unavailable")
+        self.assertEqual(error_payload["reason"], "RuntimeError")
+        self.assertNotIn("bundle-memory-boom", json.dumps(error_payload, sort_keys=True))
+        for absent in ("files", "already_in_hermes", "promotable", "approved_records"):
+            self.assertNotIn(absent, error_payload)
+
     def test_recommend_tool_distinguishes_missing_package_from_package_call_failure(self) -> None:
         from omh.plugin_bundle.omh.tools import recommend_tool
 

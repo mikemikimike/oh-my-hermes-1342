@@ -20,10 +20,13 @@ edits them.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 # Hermes' own entry separator; see ENTRY_DELIMITER in its memory tool.
 HERMES_MEMORY_DELIMITER = "§"
@@ -155,3 +158,105 @@ def nearest_entry(text: str, entries: tuple[str, ...] | list[str]) -> tuple[int,
         if score > best_score:
             best_index, best_score = index, score
     return best_index, best_score
+
+
+HERMES_MEMORY_BRIDGE_SCHEMA_VERSION = "hermes_memory_bridge/v1"
+PROJECT_MEMORY_RECORD_SCHEMA_VERSION = "project_memory_record/v1"
+
+
+def read_approved_records(omh_home: str | Path) -> list[dict[str, Any]]:
+    """Approved OMH project-memory records, read with stdlib only.
+
+    The bundle has to reach these itself. The `omh` package is not importable
+    from the Hermes process -- it lives in its own environment -- so a tool that
+    delegated the read would answer "package absent" on the one host that
+    matters, which is exactly what shipped before this was vendored.
+    """
+    directory = Path(omh_home).expanduser() / "memory" / "records"
+    records: list[dict[str, Any]] = []
+    try:
+        candidates = sorted(directory.glob("*.json"))
+    except OSError:
+        return records
+    for path in candidates:
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if data.get("schema_version") != PROJECT_MEMORY_RECORD_SCHEMA_VERSION:
+            continue
+        if data.get("review_status") != "approved":
+            continue
+        records.append(data)
+    return records
+
+
+def build_hermes_memory_bridge(omh_home: str | Path, hermes_home: str | Path) -> dict[str, object]:
+    """Relate OMH's approved records to what Hermes already remembers.
+
+    The two stores share no identifier, so neither could see the other: OMH
+    deduplicated against itself, and Hermes' memory tool rejects only exact
+    strings. A fact approved in OMH and restated by hand in MEMORY.md lived in
+    both, worded differently, with nothing linking them.
+
+    Read-only. Hermes owns these files; its own `memory` tool is what edits them.
+    """
+    readings = read_hermes_memory(hermes_home)
+    records = read_approved_records(omh_home)
+    memory_file = next((reading for reading in readings if reading.label == "MEMORY.md"), None)
+    entries = memory_file.entries if memory_file else ()
+    already_present: list[dict[str, object]] = []
+    promotable: list[dict[str, object]] = []
+    matched_entries: set[int] = set()
+    for record in records:
+        summary = str(record.get("summary", "") or "")
+        index, score = nearest_entry(summary, entries)
+        row: dict[str, object] = {
+            "record_id": str(record.get("record_id", "")),
+            "summary_length": len(summary),
+            "scope": record.get("scope", {}),
+            "nearest_entry_index": index,
+            "similarity": round(score, 2),
+        }
+        if score >= DUPLICATE_SIMILARITY_THRESHOLD:
+            matched_entries.add(index)
+            already_present.append(row)
+            continue
+        # `+ 1` is the delimiter Hermes inserts before an appended entry.
+        row["fits_headroom"] = bool(memory_file) and len(summary) + 1 <= memory_file.headroom_chars
+        promotable.append(row)
+    return {
+        "schema_version": HERMES_MEMORY_BRIDGE_SCHEMA_VERSION,
+        "files": [reading.to_dict() for reading in readings],
+        "approved_records": len(records),
+        "already_in_hermes": already_present,
+        "promotable": promotable,
+        "hermes_entries_without_omh_record": _unsourced_entry_rows(entries, matched_entries),
+        "duplicate_similarity_threshold": DUPLICATE_SIMILARITY_THRESHOLD,
+        "redaction_policy": "metadata_only",
+        "next_action": (
+            "Promote a record by asking Hermes to add it through its own memory tool; free headroom first "
+            "when nothing fits."
+        ),
+        "claim_boundary": (
+            "OMH reads Hermes memory and cannot change it. This comparison is prepared review context only; "
+            "it is not a Hermes memory write, execution, review, CI, or merge evidence."
+        ),
+    }
+
+
+def _unsourced_entry_rows(entries: tuple[str, ...], matched: set[int]) -> list[dict[str, object]]:
+    """Hermes entries no approved OMH record explains, as metadata only."""
+    return [
+        {
+            "entry_index": index,
+            "chars": len(entry),
+            "sha256": hashlib.sha256(entry.encode("utf-8")).hexdigest(),
+        }
+        for index, entry in enumerate(entries)
+        if index not in matched
+    ]

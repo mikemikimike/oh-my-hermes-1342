@@ -20,8 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config_adapter import external_dirs, read_config
-from ..paths import default_hermes_home
-from . import hermes_memory
+from ..paths import default_hermes_home, expand_path, find_project_root
+from ..plugin_bundle.omh import hermes_memory
 
 CONTRACT = "hermes_config_advice/v1"
 
@@ -428,7 +428,86 @@ def check_legacy_plan_artifacts(hermes_home: str | Path | None = None) -> Advice
 
 
 # ---------------------------------------------------------------------------
-# 5. installed_skill_context_weight
+# 5. orphaned_project_scope_store
+# ---------------------------------------------------------------------------
+
+def check_orphaned_project_scope_store(
+    hermes_home: str | Path | None = None,
+    *,
+    cwd: str | Path | None = None,
+) -> AdviceEntry:
+    """Report a `--scope project` store stranded below the repository root.
+
+    `--scope project` used to anchor on the literal working directory, so
+    running it from a subdirectory installed into `<subdir>/.omh`. It now
+    anchors at the repository root, which leaves any such install unreachable.
+    This is the exact inverse of that change, not a guess: it looks only between
+    the current directory and the root, so it can fire only for a store the
+    change actually orphaned.
+    """
+    del hermes_home  # this check reads the working directory, not Hermes' home
+    evidence_boundary = (
+        "Local existence check of `.omh/manifest.json` in directories between the working "
+        "directory and the repository root; OMH does not read, move, or delete them."
+    )
+    remediation = (
+        "`--scope project` now anchors at the repository root, so a store installed from a "
+        "subdirectory is no longer found. Re-run `omh --scope project setup` from the "
+        "repository root, then delete the old directory by hand. OMH will not move it."
+    )
+    try:
+        root = find_project_root(cwd)
+        start = expand_path(cwd or Path.cwd())
+        if root is None or start == root:
+            return AdviceEntry(
+                "orphaned_project_scope_store",
+                "ok",
+                remediation,
+                evidence_boundary,
+                "no subdirectory between the working directory and a repository root",
+            )
+        stranded = [
+            str(candidate)
+            for candidate in _ancestors_below(start, root)
+            if (candidate / ".omh" / "manifest.json").is_file()
+        ]
+    except OSError as error:
+        return AdviceEntry(
+            "orphaned_project_scope_store",
+            "unobserved",
+            remediation,
+            evidence_boundary,
+            f"working directory unreadable: {error}",
+        )
+    if not stranded:
+        return AdviceEntry(
+            "orphaned_project_scope_store",
+            "ok",
+            remediation,
+            evidence_boundary,
+            "no project-scope store below the repository root",
+        )
+    return AdviceEntry(
+        "orphaned_project_scope_store",
+        "advice",
+        remediation,
+        evidence_boundary,
+        "; ".join(f"stranded store in {path}" for path in stranded),
+    )
+
+
+def _ancestors_below(start: Path, root: Path) -> list[Path]:
+    """`start` and its parents, stopping before `root`."""
+    below: list[Path] = []
+    for candidate in (start, *start.parents):
+        if candidate == root:
+            break
+        below.append(candidate)
+    return below
+
+
+# ---------------------------------------------------------------------------
+# 6. installed_skill_context_weight
 # ---------------------------------------------------------------------------
 
 def _count_skill_dirs(skills_dir: Path) -> int:
@@ -519,6 +598,7 @@ def run_config_advisories(hermes_home: str | Path | None = None) -> AdvisoryRepo
             check_soul_missing_or_starter(hermes_home),
             check_hermes_memory_staleness(hermes_home),
             check_legacy_plan_artifacts(hermes_home),
+            check_orphaned_project_scope_store(hermes_home),
             check_installed_skill_context_weight(hermes_home),
         ],
     )

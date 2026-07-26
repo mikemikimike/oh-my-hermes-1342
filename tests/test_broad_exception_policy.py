@@ -148,9 +148,9 @@ CLASSIFIED_SITES: tuple[ClassifiedSite, ...] = (
         "src/plugin_bundle/omh/tools/memory_tool.py",
         "_memory_bridge",
         INTENTIONAL,
-        "Returns the distinct `package_memory_error` source plus a sanitized error type, so a "
-        "package runtime failure never reads as `standalone_plugin_bundle_fallback` -- the label "
-        "a host that genuinely lacks OMH would get.",
+        "Returns the distinct `bundle_memory_error` source plus a sanitized error type. The "
+        "alternative is an empty comparison, which would read as `Hermes remembers nothing` when "
+        "the truth is that OMH could not read the file.",
     ),
     ClassifiedSite(
         "src/plugin_bundle/omh/tools/recommend_tool.py",
