@@ -41,6 +41,19 @@ _RAW_CODEX_JSONL_RE = re.compile(
     re.IGNORECASE,
 )
 _SELF_IMPROVEMENT_REVIEW_RE = re.compile(r"\bSelf-improvement\s+review\s*:", re.IGNORECASE)
+# Absolute filesystem paths in chat-facing progress copy leak the operator's
+# home directory -- on this repo's own machines that segment is an email-shaped
+# account name -- into whatever surface renders the progress line, and they pad
+# a one-line status with machine layout nobody reading chat can act on. The
+# useful part of "/Users/<account>/work/<repo>/src/skills/render.py" is the tail
+# after the repo root, so keep a bounded tail and drop the rooted prefix.
+#
+# Matching is deliberately conservative: an absolute POSIX path with at least
+# two segments, or a drive-lettered Windows path. Relative paths are already
+# safe and are left untouched, so `src/skills/render.py` survives verbatim.
+_ABSOLUTE_POSIX_PATH_RE = re.compile(r"(?<![\w./])/(?:[\w.@+-]+/){1,}[\w.@+-]+")
+_ABSOLUTE_WINDOWS_PATH_RE = re.compile(r"(?<![\w\\])[A-Za-z]:\\(?:[\w.@+ -]+\\)*[\w.@+ -]+")
+_REDACTED_PATH_TAIL_SEGMENTS = 3
 
 CODING_PROGRESS_REPORTABLE_EVENTS = (
     "workflow_started",
@@ -98,9 +111,34 @@ def compact_visible_text(value: Any, *, max_chars: int) -> str:
     return f"{text[: max_chars - 3]}..."
 
 
+def redact_absolute_paths(value: Any) -> str:
+    """Reduce absolute filesystem paths to a bounded, account-free tail.
+
+    `/Users/someone/work/repo/src/skills/render.py` becomes
+    `.../repo/src/skills/render.py`. Relative paths are returned unchanged,
+    because they carry no home directory and are already the readable form.
+    """
+    text = str(value)
+    if not text.strip():
+        return ""
+    return _ABSOLUTE_WINDOWS_PATH_RE.sub(
+        lambda match: _shorten_path(match.group(0), "\\"),
+        _ABSOLUTE_POSIX_PATH_RE.sub(lambda match: _shorten_path(match.group(0), "/"), text),
+    )
+
+
+def _shorten_path(path: str, separator: str) -> str:
+    segments = [segment for segment in path.split(separator) if segment]
+    if len(segments) <= _REDACTED_PATH_TAIL_SEGMENTS:
+        # Short enough to carry no home directory; keep it byte-identical so
+        # `/etc/hosts` does not silently lose its leading separator.
+        return path
+    return "..." + separator + separator.join(segments[-_REDACTED_PATH_TAIL_SEGMENTS:])
+
+
 def sanitize_user_facing_progress_text(value: Any, *, max_chars: int | None = None) -> str:
     """Drop raw process/JSONL maintenance noise from chat-facing progress copy."""
-    text = str(value)
+    text = redact_absolute_paths(value)
     if not text.strip():
         return ""
     clean_lines: list[str] = []
