@@ -30,3 +30,8 @@ TOOL_FILE_STEMS = {
 }
 
 TOOLS_REQUIRING_ROLE_CATALOG = frozenset({"omh_role"})
+
+# The name Hermes' `memory.provider` config key must carry for OMH's provider to
+# load. Hermes runs at most one external provider, so selecting it is an opt-in
+# the operator makes, never something setup does on their behalf.
+MEMORY_PROVIDER_NAME = "omh"

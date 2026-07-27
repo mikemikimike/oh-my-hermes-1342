@@ -5,11 +5,18 @@ from pathlib import Path
 
 from .advisory import AdvisoryReport, run_config_advisories
 from ..command_path import inspect_omh_command_path
-from ..config_adapter import external_dirs, plugin_enablement, plugin_is_enabled, read_config
+from ..config_adapter import (
+    external_dirs,
+    memory_provider_selection,
+    plugin_enablement,
+    plugin_is_enabled,
+    read_config,
+)
 from ..hashutil import sha256_file
 from ..local_store import can_write_dir
 from ..manifest import local_modifications, read_manifest
 from ..paths import OmhPaths
+from ..plugin_bundle.omh.metadata import MEMORY_PROVIDER_NAME
 from ..plugin_observations import (
     PLUGIN_HOST_ACTIVE_OBSERVATION_EVENTS,
     latest_plugin_host_observation,
@@ -119,6 +126,7 @@ def run_doctor(paths: OmhPaths) -> list[Check]:
     external_registered = str(paths.skills_dir) in dirs
     checks.append(Check("external_dir", external_registered, f"{paths.skills_dir} in skills.external_dirs"))
     checks.append(_skill_shadowing_check(paths, dirs))
+    checks.append(_memory_provider_check(config_text))
     checks.append(
         Check(
             "runtime_context",
@@ -276,6 +284,32 @@ def run_doctor(paths: OmhPaths) -> list[Check]:
             )
         )
     return checks
+
+
+def _memory_provider_check(config_text: str) -> Check:
+    """Report who holds Hermes' single external memory-provider slot.
+
+    Hermes runs at most one. Leaving the slot empty is a perfectly good state --
+    Hermes falls back to its built-in memory -- so this never fails on an unset
+    provider. It exists because a slot silently held by something else is the
+    reason OMH's hooks would not be running, and that is invisible otherwise.
+    """
+    selection = memory_provider_selection(config_text)
+    if selection == MEMORY_PROVIDER_NAME:
+        return Check("memory_provider", True, "Hermes memory.provider is omh")
+    if selection:
+        return Check(
+            "memory_provider",
+            True,
+            f"Hermes memory.provider is {selection}; OMH memory hooks are not running. "
+            "Run `omh memory provider --enable` after clearing it to switch.",
+        )
+    return Check(
+        "memory_provider",
+        True,
+        "Hermes memory.provider is unset (built-in memory). Run `omh memory provider --enable` "
+        "to let OMH recall and journal memory automatically.",
+    )
 
 
 def _skill_shadowing_check(paths: OmhPaths, configured_dirs: list[str]) -> Check:

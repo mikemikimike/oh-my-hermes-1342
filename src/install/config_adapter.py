@@ -217,6 +217,102 @@ def ensure_plugin_enabled(config_text: str, name: str) -> ConfigChange:
     return ConfigChange(True, "inserted plugins.enabled", "\n".join(lines) + "\n")
 
 
+def memory_provider_selection(config_text: str) -> str:
+    """The name in `memory.provider`, or "" when Hermes is on its built-in memory."""
+    return _section_scalar(config_text, "memory", "provider")
+
+
+def set_memory_provider(config_text: str, name: str) -> ConfigChange:
+    """Point `memory.provider` at `name`, unless another product already holds it.
+
+    Hermes runs at most one external memory provider
+    (`agent/memory_manager.py`), so this key is a slot rather than a list.
+    Overwriting a different provider would silently switch off whatever the
+    operator chose -- honcho, mem0, hindsight -- so it is refused and reported
+    instead. Clearing the slot is the operator's call, made explicitly.
+    """
+    current = memory_provider_selection(config_text)
+    if current == name:
+        return ConfigChange(False, f"memory.provider is already {name}", config_text)
+    if current:
+        return ConfigChange(
+            False,
+            f"memory.provider is {current}; Hermes runs one external provider, so clear it first",
+            config_text,
+        )
+
+    lines = config_text.splitlines()
+    memory_index = next(
+        (idx for idx, line in enumerate(lines) if line.strip() == "memory:" and not line.startswith(" ")),
+        None,
+    )
+    if memory_index is None:
+        text = (config_text.rstrip() + f"\n\nmemory:\n  provider: {name}\n").lstrip("\n")
+        return ConfigChange(True, "appended memory.provider", text)
+
+    for idx in range(memory_index + 1, len(lines)):
+        line = lines[idx]
+        if line.strip() and not line.startswith(" "):
+            break
+        if line.startswith("  ") and not line.startswith("    "):
+            key, _, _rest = line.strip().partition(":")
+            if key.strip() == "provider":
+                lines[idx] = f"  provider: {name}"
+                return ConfigChange(True, "set memory.provider", "\n".join(lines) + "\n")
+
+    lines.insert(memory_index + 1, f"  provider: {name}")
+    return ConfigChange(True, "inserted memory.provider", "\n".join(lines) + "\n")
+
+
+def clear_memory_provider(config_text: str, name: str) -> ConfigChange:
+    """Hand the slot back, but only when `name` is the one holding it."""
+    current = memory_provider_selection(config_text)
+    if not current:
+        return ConfigChange(False, "memory.provider is already unset", config_text)
+    if current != name:
+        return ConfigChange(False, f"memory.provider is {current}, not {name}; leaving it alone", config_text)
+
+    lines = config_text.splitlines()
+    for idx, line in enumerate(lines):
+        if not line.startswith("  ") or line.startswith("    "):
+            continue
+        key, _, _rest = line.strip().partition(":")
+        if key.strip() == "provider" and _enclosing_section(lines, idx) == "memory":
+            lines[idx] = "  provider: ''"
+            return ConfigChange(True, "cleared memory.provider", "\n".join(lines) + "\n")
+    return ConfigChange(False, "memory.provider line not found", config_text)
+
+
+def _section_scalar(config_text: str, section: str, key: str) -> str:
+    dotted = f"{section}.{key}:"
+    for index, line in enumerate(config_text.splitlines()):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith(dotted) and not line.startswith(" "):
+            return _scalar_value(stripped[len(dotted) :])
+        if line.startswith("  ") and not line.startswith("    "):
+            candidate, separator, rest = stripped.partition(":")
+            if separator and candidate.strip() == key and _enclosing_section(config_text.splitlines(), index) == section:
+                return _scalar_value(rest)
+    return ""
+
+
+def _enclosing_section(lines: list[str], index: int) -> str:
+    for cursor in range(index - 1, -1, -1):
+        line = lines[cursor]
+        if line.strip() and not line.startswith(" "):
+            return line.strip().rstrip(":")
+    return ""
+
+
+def _scalar_value(value: str) -> str:
+    stripped = value.split("#")[0].strip() if not value.strip().startswith(("'", '"')) else value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+        return stripped[1:-1]
+    return stripped
+
+
 def ensure_external_dir(config_text: str, skill_dir: str | Path) -> ConfigChange:
     _validate_external_dirs_mutation_shape(config_text)
     target = _normalize(skill_dir)

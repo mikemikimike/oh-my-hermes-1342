@@ -5,7 +5,25 @@ import json
 import sys
 from pathlib import Path
 
+from ..install.config_adapter import (
+    clear_memory_provider,
+    memory_provider_selection,
+    read_config,
+    set_memory_provider,
+    write_config,
+)
 from ..installer import OmhError
+from ..plugin_bundle.omh.memory_blocks import (
+    MemoryBlockError,
+    blocks_dir,
+    build_memory_block,
+    delete_memory_block,
+    read_memory_blocks,
+    write_memory_block,
+)
+from ..plugin_bundle.omh.memory_dreaming import read_dreaming_state
+from ..plugin_bundle.omh.memory_provider import OmhMemoryProvider
+from ..plugin_bundle.omh.metadata import MEMORY_PROVIDER_NAME
 from ..memory import (
     RejectedDecisionRecallRequest,
     apply_memory_update_batch,
@@ -187,6 +205,103 @@ def cmd_memory_apply(args: argparse.Namespace) -> int:
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise OmhError(str(exc)) from exc
     _print_json(result)
+    return 0
+
+
+def cmd_memory_blocks(args: argparse.Namespace) -> int:
+    paths = _paths(args)
+    blocks = read_memory_blocks(paths.omh_home, tier=args.tier)
+    _print_json(
+        {
+            "schema_version": "omh_memory_block_listing/v1",
+            "blocks": [block.to_summary() for block in blocks],
+            "block_count": len(blocks),
+            "store_dir": str(blocks_dir(paths.omh_home)),
+            "claim_boundary": (
+                "Block listings are prepared OMH context; they are not evidence that Hermes read "
+                "a block or that any memory was written."
+            ),
+        }
+    )
+    return 0
+
+
+def cmd_memory_block_set(args: argparse.Namespace) -> int:
+    try:
+        value = sys.stdin.read() if args.stdin else str(args.value or "")
+        block = build_memory_block(
+            args.label,
+            value,
+            description=args.description,
+            limit=args.limit,
+            tier=args.tier,
+        )
+        path = write_memory_block(_paths(args).omh_home, block)
+    except MemoryBlockError as exc:
+        raise OmhError(str(exc)) from exc
+    except (OSError, ValueError) as exc:
+        raise OmhError(str(exc)) from exc
+    _print_json({"schema_version": "omh_memory_block_write/v1", "written": True, "path": str(path), "block": block.to_summary()})
+    return 0
+
+
+def cmd_memory_block_remove(args: argparse.Namespace) -> int:
+    try:
+        removed = delete_memory_block(_paths(args).omh_home, args.label, args.tier)
+    except MemoryBlockError as exc:
+        raise OmhError(str(exc)) from exc
+    _print_json({"schema_version": "omh_memory_block_remove/v1", "removed": removed, "label": args.label, "tier": args.tier})
+    return 0
+
+
+def cmd_memory_dream(args: argparse.Namespace) -> int:
+    """Report whether consolidation is due. Never consolidates: that needs a model."""
+    paths = _paths(args)
+    provider = OmhMemoryProvider(paths.omh_home)
+    provider.initialize("", hermes_home=str(paths.hermes_home))
+    payload = dict(provider.consolidation_due()) if args.evaluate else {}
+    payload["state"] = read_dreaming_state(paths.omh_home)
+    payload["evaluated"] = bool(args.evaluate)
+    _print_json(payload)
+    return 0
+
+
+def cmd_memory_provider(args: argparse.Namespace) -> int:
+    """Show, take, or hand back Hermes' single external memory-provider slot."""
+    paths = _paths(args)
+    path = paths.hermes_config_path
+    text = read_config(path)
+    change = None
+    if args.enable:
+        change = set_memory_provider(text, MEMORY_PROVIDER_NAME)
+    elif args.disable:
+        change = clear_memory_provider(text, MEMORY_PROVIDER_NAME)
+    if change is not None and change.changed and not args.dry_run:
+        try:
+            write_config(path, change.text)
+        except OSError as exc:
+            raise OmhError(str(exc)) from exc
+    selection = memory_provider_selection(change.text if change is not None else text)
+    _print_json(
+        {
+            "schema_version": "omh_memory_provider_status/v1",
+            "provider": selection,
+            "is_omh": selection == MEMORY_PROVIDER_NAME,
+            "config_path": str(path),
+            "config_exists": path.is_file(),
+            "changed": bool(change.changed) if change is not None else False,
+            "reason": change.message if change is not None else "status only",
+            "dry_run": bool(args.dry_run),
+            "next_action": (
+                "Restart Hermes for a provider change to take effect; run `omh setup` first if the "
+                "bundle is not installed."
+            ),
+            "claim_boundary": (
+                "This reports and edits Hermes' config selection only. It is not evidence that "
+                "Hermes loaded the provider, ran a hook, or changed any memory."
+            ),
+        }
+    )
     return 0
 
 

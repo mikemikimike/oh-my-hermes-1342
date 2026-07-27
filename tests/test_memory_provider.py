@@ -1,0 +1,640 @@
+"""OMH's memory blocks, dreaming scheduler, eviction plan, and Hermes provider.
+
+The defect these close is that everything OMH knew about memory had to be asked
+for. Hermes wrote its own memory after every turn through
+``agent/background_review.py`` with no statement of what OMH already held, and
+OMH could only notice afterwards that some entry matched no record it kept.
+
+Three boundaries are load-bearing enough to be pinned here rather than described:
+
+- A block value is OMH's own content and is returned in full. A Hermes memory
+  entry is not, and never appears outside a count or a hash.
+- The provider never runs consolidation. It decides that consolidation is due
+  and writes a brief; a model does the rest.
+- The provider is not permitted to take a memory-provider slot another product
+  holds, because Hermes runs exactly one.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from _cli_harness import run_cli
+from _local_package import load_local_package
+
+load_local_package()
+from omh.install.config_adapter import (
+    clear_memory_provider,
+    memory_provider_selection,
+    set_memory_provider,
+)
+from omh.plugin_bundle.omh import register
+from omh.plugin_bundle.omh.memory_blocks import (
+    DEFAULT_BLOCK_LIMIT_CHARS,
+    MemoryBlockError,
+    build_memory_block,
+    delete_memory_block,
+    read_memory_block,
+    read_memory_blocks,
+    render_block_index,
+    render_memory_blocks,
+    write_memory_block,
+)
+from omh.plugin_bundle.omh.memory_dreaming import (
+    DEFAULT_TURN_INTERVAL,
+    consolidation_reasons,
+    empty_dreaming_state,
+    read_dreaming_state,
+    record_compaction,
+    record_memory_write,
+    record_turn,
+    write_dreaming_state,
+)
+from omh.plugin_bundle.omh.memory_eviction import build_eviction_plan, eviction_plan_summary
+from omh.plugin_bundle.omh.memory_provider import PROVIDER_NAME, OmhMemoryProvider
+from omh.plugin_bundle.omh.metadata import MEMORY_PROVIDER_NAME
+from omh.plugin_bundle.omh.tools.memory_tool import MEMORY_ACTIONS, OMH_MEMORY_SCHEMA, omh_memory_handler
+
+HERMES_DELIMITER = "§"
+
+
+def _write_hermes_memory(hermes_home: Path, *entries: str) -> Path:
+    path = hermes_home / "memories" / "MEMORY.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(HERMES_DELIMITER.join(entries), encoding="utf-8")
+    return path
+
+
+class BlockStoreTests(unittest.TestCase):
+    def test_a_block_round_trips_through_disk(self) -> None:
+        with TemporaryDirectory() as tmp:
+            block = build_memory_block("project-facts", "OMH wraps Hermes.", description="Facts.")
+            write_memory_block(tmp, block)
+            self.assertEqual(read_memory_blocks(tmp), (block,))
+
+    def test_an_over_limit_block_is_rejected_rather_than_truncated(self) -> None:
+        # Truncating would make the store disagree with what the caller believes
+        # it wrote, and the disagreement only shows up as a missing sentence later.
+        with self.assertRaises(MemoryBlockError):
+            build_memory_block("facts", "x" * 51, limit=50)
+
+    def test_labels_are_constrained_because_they_name_files(self) -> None:
+        for label in ("", "Has Caps", "../escape", "-leading", "a" * 64):
+            with self.subTest(label=label), self.assertRaises(MemoryBlockError):
+                build_memory_block(label, "value")
+
+    def test_an_unknown_tier_is_rejected(self) -> None:
+        with self.assertRaises(MemoryBlockError):
+            build_memory_block("facts", "value", tier="archival")
+
+    def test_blocks_are_read_in_label_order_so_a_render_is_reproducible(self) -> None:
+        with TemporaryDirectory() as tmp:
+            for label in ("zulu", "alpha", "mike"):
+                write_memory_block(tmp, build_memory_block(label, "v"))
+            self.assertEqual([block.label for block in read_memory_blocks(tmp)], ["alpha", "mike", "zulu"])
+
+    def test_tiers_are_stored_and_listed_separately(self) -> None:
+        with TemporaryDirectory() as tmp:
+            write_memory_block(tmp, build_memory_block("always", "v", tier="system"))
+            write_memory_block(tmp, build_memory_block("sometimes", "v", tier="reference"))
+            self.assertEqual([b.label for b in read_memory_blocks(tmp, tier="system")], ["always"])
+            self.assertEqual([b.label for b in read_memory_blocks(tmp, tier="reference")], ["sometimes"])
+            self.assertEqual(len(read_memory_blocks(tmp)), 2)
+
+    def test_an_unreadable_block_is_absent_rather_than_fatal(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "memory" / "blocks" / "system" / "broken.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{not json", encoding="utf-8")
+            self.assertIsNone(read_memory_block(path))
+            self.assertEqual(read_memory_blocks(tmp), ())
+
+    def test_removing_a_block_reports_whether_it_was_there(self) -> None:
+        with TemporaryDirectory() as tmp:
+            write_memory_block(tmp, build_memory_block("facts", "v"))
+            self.assertTrue(delete_memory_block(tmp, "facts", "system"))
+            self.assertFalse(delete_memory_block(tmp, "facts", "system"))
+
+
+class RenderTests(unittest.TestCase):
+    def test_a_render_shows_the_model_how_full_each_block_is(self) -> None:
+        block = build_memory_block("facts", "abc", description="What we know.", limit=100)
+        rendered = render_memory_blocks([block])
+        self.assertIn("<memory_blocks>", rendered)
+        self.assertIn("chars_current=3 chars_limit=100", rendered)
+        self.assertIn("<value>abc</value>", rendered)
+
+    def test_an_empty_store_renders_nothing_at_all(self) -> None:
+        self.assertEqual(render_memory_blocks([]), "")
+        self.assertEqual(render_block_index([]), "")
+
+    def test_the_budget_drops_whole_blocks_and_says_which(self) -> None:
+        # A clipped block would read as something the store actually holds.
+        blocks = [build_memory_block(f"b{index}", "x" * 200) for index in range(5)]
+        rendered = render_memory_blocks(blocks, budget_chars=400)
+        self.assertIn("render_budget_exhausted", rendered)
+        self.assertIn("b4", rendered)
+        self.assertNotIn("<b4>", rendered)
+
+    def test_the_index_lists_reference_blocks_without_their_values(self) -> None:
+        block = build_memory_block("runbook", "SECRET-VALUE", description="How to deploy.", tier="reference")
+        index = render_block_index([block])
+        self.assertIn('label="runbook"', index)
+        self.assertIn("How to deploy.", index)
+        self.assertNotIn("SECRET-VALUE", index)
+
+
+class DreamingScheduleTests(unittest.TestCase):
+    def test_counters_round_trip_and_survive_a_corrupt_file(self) -> None:
+        with TemporaryDirectory() as tmp:
+            write_dreaming_state(tmp, record_turn(empty_dreaming_state()))
+            self.assertEqual(read_dreaming_state(tmp)["turns_since_consolidation"], 1)
+            (Path(tmp) / "memory" / "dreaming.json").write_text("{", encoding="utf-8")
+            self.assertEqual(read_dreaming_state(tmp), empty_dreaming_state())
+
+    def test_the_turn_interval_is_the_baseline_trigger(self) -> None:
+        state = empty_dreaming_state()
+        for _ in range(DEFAULT_TURN_INTERVAL - 1):
+            state = record_turn(state)
+        self.assertEqual(consolidation_reasons(state), [])
+        state = record_turn(state)
+        self.assertTrue(any(reason.startswith("turn_interval_reached") for reason in consolidation_reasons(state)))
+
+    def test_compaction_triggers_consolidation_on_its_own(self) -> None:
+        reasons = consolidation_reasons(record_compaction(empty_dreaming_state()))
+        self.assertIn("context_compaction_observed", reasons)
+
+    def test_low_headroom_triggers_before_the_file_is_full(self) -> None:
+        reasons = consolidation_reasons(empty_dreaming_state(), headroom_chars=100, headroom_floor_chars=300)
+        self.assertTrue(any(reason.startswith("headroom_below_floor") for reason in reasons))
+
+    def test_reasons_are_named_so_a_brief_can_state_its_own_cause(self) -> None:
+        reasons = consolidation_reasons(record_compaction(empty_dreaming_state()), duplicate_count=2)
+        self.assertIn("context_compaction_observed", reasons)
+        self.assertIn("duplicate_records:2", reasons)
+
+    def test_mode_off_silences_every_trigger(self) -> None:
+        state = record_compaction(empty_dreaming_state())
+        self.assertEqual(consolidation_reasons(state, mode="off", headroom_chars=0), [])
+
+    def test_memory_writes_are_counted_separately_from_turns(self) -> None:
+        state = record_memory_write(record_turn(empty_dreaming_state()))
+        self.assertEqual(state["turns_since_consolidation"], 1)
+        self.assertEqual(state["memory_writes_observed"], 1)
+
+
+class EvictionPlanTests(unittest.TestCase):
+    def test_rewordings_of_one_fact_group_into_a_single_cluster(self) -> None:
+        entries = (
+            "document-harness는 sionic-ai 레포의 에이전트 하네스 기반 문서 작성 시스템이다",
+            "document-harness: sionic-ai 레포의 에이전트 하네스 기반 문서 작성 시스템",
+            "커피 원두는 밀봉 용기에 보관한다",
+        )
+        plan = build_eviction_plan(entries, cap=2200)
+        self.assertEqual(len(plan["duplicate_clusters"]), 1)
+        self.assertEqual(plan["duplicate_clusters"][0]["entry_indices"], [0, 1])
+        self.assertGreater(plan["reclaimable_chars"], 0)
+
+    def test_distinct_entries_produce_no_cluster(self) -> None:
+        plan = build_eviction_plan(("release 스크립트 dry-run", "커피 원두 보관"), cap=2200)
+        self.assertEqual(plan["duplicate_clusters"], [])
+        self.assertEqual(plan["reclaimable_chars"], 0)
+
+    def test_a_shortfall_counts_the_delimiter_the_write_will_cost(self) -> None:
+        plan = build_eviction_plan(("x" * 90,), cap=100, required_chars=10)
+        # 90 used, 10 free, and the write needs 10 + 1 for the delimiter.
+        self.assertEqual(plan["headroom_chars"], 10)
+        self.assertEqual(plan["required_chars"], 11)
+        self.assertEqual(plan["shortfall_chars"], 1)
+
+    def test_a_plan_that_cannot_free_enough_says_so(self) -> None:
+        plan = build_eviction_plan(("x" * 99,), cap=100, required_chars=500)
+        self.assertFalse(plan["sufficient"])
+        self.assertIn("provably redundant", eviction_plan_summary(plan))
+
+    def test_an_unexplained_entry_is_never_an_eviction_candidate(self) -> None:
+        # Unexplained is a reason to ask, not a reason to delete.
+        plan = build_eviction_plan(("a fact nothing in OMH explains",), cap=2200)
+        self.assertTrue(plan["unexplained_entries_are_not_candidates"])
+        self.assertEqual(plan["duplicate_clusters"], [])
+
+    def test_the_plan_carries_no_entry_text(self) -> None:
+        secret = "루트 비밀번호는 hunter2 이다"
+        plan = build_eviction_plan((secret, secret + " 확실히"), cap=2200)
+        self.assertNotIn("hunter2", json.dumps(plan, ensure_ascii=False))
+
+
+class ProviderRegistrationTests(unittest.TestCase):
+    class _Collector:
+        """Mirrors Hermes' `_ProviderCollector`: one real method, the rest no-ops."""
+
+        def __init__(self) -> None:
+            self.provider = None
+            self.tools: list[str] = []
+
+        def register_memory_provider(self, provider) -> None:
+            self.provider = provider
+
+        def register_tool(self, *args, **kwargs) -> None:
+            self.tools.append(args[0] if args else "")
+
+        def register_hook(self, *args, **kwargs) -> None:
+            pass
+
+    class _PluginCtx:
+        """Mirrors the real Hermes plugin context, which has no provider method."""
+
+        def __init__(self) -> None:
+            self.tools: list[str] = []
+            self.hooks: list[str] = []
+
+        def register_tool(self, name, *args, **kwargs) -> None:
+            self.tools.append(name)
+
+        def register_hook(self, name, callback) -> None:
+            self.hooks.append(name)
+
+    def test_the_memory_loader_gets_a_provider_and_no_tools(self) -> None:
+        collector = self._Collector()
+        register(collector)
+        self.assertIsInstance(collector.provider, OmhMemoryProvider)
+        # Registering ten tools into a collector that discards them is work the
+        # provider load should never do.
+        self.assertEqual(collector.tools, [])
+
+    def test_the_plugin_loader_still_gets_every_tool_and_hook(self) -> None:
+        ctx = self._PluginCtx()
+        register(ctx)
+        self.assertIn("omh_memory", ctx.tools)
+        self.assertEqual(len(ctx.tools), 10)
+        self.assertIn("on_session_end", ctx.hooks)
+
+    def test_the_provider_exposes_no_tool_schemas(self) -> None:
+        # `agent/memory_provider.py` names tool-schema bloat as the reason only
+        # one external provider may run; the block read lives on `omh_memory`.
+        self.assertEqual(OmhMemoryProvider().get_tool_schemas(), [])
+
+    def test_the_provider_name_matches_what_config_must_carry(self) -> None:
+        self.assertEqual(OmhMemoryProvider().name, MEMORY_PROVIDER_NAME)
+        self.assertEqual(PROVIDER_NAME, MEMORY_PROVIDER_NAME)
+
+
+class ProviderLifecycleTests(unittest.TestCase):
+    def _provider(self, root: Path, *, agent_context: str = "primary") -> OmhMemoryProvider:
+        provider = OmhMemoryProvider(root / ".omh")
+        provider.initialize("session-1", hermes_home=str(root / ".hermes"), agent_context=agent_context)
+        return provider
+
+    def test_availability_is_a_local_check_with_no_network(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertFalse(OmhMemoryProvider(root / "absent").is_available())
+            (root / ".omh").mkdir()
+            self.assertTrue(OmhMemoryProvider(root / ".omh").is_available())
+
+    def test_prefetch_serves_a_pack_rendered_off_the_hot_path(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_memory_block(root / ".omh", build_memory_block("facts", "OMH wraps Hermes."))
+            provider = self._provider(root)
+            self.assertIn("OMH wraps Hermes.", provider.prefetch("anything"))
+
+            # A block written mid-session is not served until the next turn is
+            # queued, which is where the base class puts the work.
+            write_memory_block(root / ".omh", build_memory_block("later", "added mid-session"))
+            self.assertNotIn("added mid-session", provider.prefetch(""))
+            provider.queue_prefetch("")
+            self.assertIn("added mid-session", provider.prefetch(""))
+
+    def test_reference_blocks_reach_prefetch_as_labels_not_values(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_memory_block(
+                root / ".omh",
+                build_memory_block("runbook", "SECRET-VALUE", description="How to deploy.", tier="reference"),
+            )
+            pack = self._provider(root).prefetch("")
+            self.assertIn("runbook", pack)
+            self.assertIn("How to deploy.", pack)
+            self.assertNotIn("SECRET-VALUE", pack)
+
+    def test_a_memory_write_is_journalled_without_its_text(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = self._provider(root)
+            secret = "루트 비밀번호는 hunter2 이다"
+            provider.on_memory_write("add", "memory", secret, {"write_origin": "background_review"})
+
+            journal = (root / ".omh" / "memory" / "write_journal.jsonl").read_text(encoding="utf-8")
+            self.assertNotIn("hunter2", journal)
+            entry = json.loads(journal.splitlines()[0])
+            self.assertEqual(entry["action"], "add")
+            self.assertEqual(entry["chars"], len(secret))
+            self.assertEqual(entry["write_origin"], "background_review")
+            self.assertEqual(entry["redaction_policy"], "metadata_only")
+
+    def test_a_non_primary_context_moves_no_counters(self) -> None:
+        # Hermes states that cron and subagent contexts must not write; letting
+        # them would move the counters that decide when consolidation is due.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = self._provider(root, agent_context="cron")
+            provider.on_turn_start(1, "hello")
+            provider.on_memory_write("add", "memory", "text")
+            self.assertEqual(read_dreaming_state(root / ".omh"), empty_dreaming_state())
+
+    def test_compaction_hands_back_system_blocks_and_arms_the_trigger(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_memory_block(root / ".omh", build_memory_block("facts", "must survive compaction"))
+            provider = self._provider(root)
+            preserved = provider.on_pre_compress([{"role": "user", "content": "hi"}])
+            self.assertIn("must survive compaction", preserved)
+            self.assertTrue(read_dreaming_state(root / ".omh")["compaction_pending"])
+
+    def test_consolidation_writes_a_brief_only_when_it_is_due(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = self._provider(root)
+            handoff_path = root / ".omh" / "memory" / "consolidation.json"
+
+            self.assertFalse(provider.consolidation_due()["due"])
+            self.assertFalse(handoff_path.exists())
+
+            for _ in range(DEFAULT_TURN_INTERVAL):
+                provider.on_turn_start(1, "hello")
+            handoff = provider.consolidation_due()
+            self.assertTrue(handoff["due"])
+            self.assertTrue(handoff_path.exists())
+            # Firing resets the counters, so the next turn does not re-fire.
+            self.assertEqual(read_dreaming_state(root / ".omh")["turns_since_consolidation"], 0)
+
+    def test_the_brief_never_claims_consolidation_happened(self) -> None:
+        with TemporaryDirectory() as tmp:
+            provider = self._provider(Path(tmp))
+            boundary = str(provider.consolidation_due()["claim_boundary"])
+            self.assertIn("not evidence", boundary)
+
+    def test_headroom_pressure_reaches_the_scheduler_from_hermes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_hermes_memory(root / ".hermes", "x" * 2100)
+            handoff = self._provider(root).consolidation_due()
+            self.assertTrue(any(str(r).startswith("headroom_below_floor") for r in handoff["reasons"]))
+            self.assertEqual(handoff["eviction_plan"]["cap"], 2200)
+
+    def test_a_read_only_home_costs_a_journal_line_not_the_turn(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = self._provider(root)
+            with patch("omh.plugin_bundle.omh.memory_provider._append_line", side_effect=OSError("read-only")):
+                provider.on_memory_write("add", "memory", "text")  # must not raise
+
+
+class MemoryToolActionTests(unittest.TestCase):
+    def _call(self, root: Path, **args) -> dict:
+        with patch.dict(os.environ, {"OMH_HOME": str(root / ".omh"), "HERMES_HOME": str(root / ".hermes")}):
+            return json.loads(omh_memory_handler(args))
+
+    def test_the_default_action_is_still_the_bridge(self) -> None:
+        with TemporaryDirectory() as tmp:
+            payload = self._call(Path(tmp).resolve())
+            self.assertEqual(payload["action"], "status")
+            self.assertEqual(payload["schema_version"], "hermes_memory_bridge/v1")
+
+    def test_every_advertised_action_is_handled(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            for action in MEMORY_ACTIONS:
+                with self.subTest(action=action):
+                    self.assertEqual(self._call(root, action=action)["action"], action)
+
+    def test_the_schema_advertises_exactly_the_handled_actions(self) -> None:
+        enum = OMH_MEMORY_SCHEMA["parameters"]["properties"]["action"]["enum"]
+        self.assertEqual(tuple(enum), MEMORY_ACTIONS)
+
+    def test_blocks_lists_labels_and_read_returns_the_value(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            write_memory_block(root / ".omh", build_memory_block("runbook", "deploy steps", tier="reference"))
+
+            listing = self._call(root, action="blocks")
+            self.assertEqual(listing["block_count"], 1)
+            self.assertNotIn("deploy steps", json.dumps(listing))
+
+            read = self._call(root, action="read", label="runbook")
+            self.assertTrue(read["found"])
+            self.assertEqual(read["block"]["value"], "deploy steps")
+
+    def test_a_missing_block_is_a_stated_miss_not_an_empty_value(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            self.assertEqual(self._call(root, action="read", label="absent")["reason"], "unknown_label")
+            self.assertEqual(self._call(root, action="read")["reason"], "label_required")
+
+    def test_an_unknown_action_names_what_is_supported(self) -> None:
+        with TemporaryDirectory() as tmp:
+            payload = self._call(Path(tmp).resolve(), action="delete-everything")
+            self.assertEqual(payload["status"], "unavailable")
+            self.assertEqual(tuple(payload["supported_actions"]), MEMORY_ACTIONS)
+
+    def test_hermes_entry_text_still_never_reaches_the_payload(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            secret = "루트비밀번호는hunter2이다"
+            _write_hermes_memory(root / ".hermes", secret)
+            for action in MEMORY_ACTIONS:
+                with self.subTest(action=action):
+                    self.assertNotIn(secret, json.dumps(self._call(root, action=action), ensure_ascii=False))
+
+
+class ProviderSlotTests(unittest.TestCase):
+    def test_the_slot_is_taken_when_it_is_free(self) -> None:
+        change = set_memory_provider("memory:\n  memory_char_limit: 2200\n", "omh")
+        self.assertTrue(change.changed)
+        self.assertEqual(memory_provider_selection(change.text), "omh")
+
+    def test_a_config_without_a_memory_section_grows_one(self) -> None:
+        change = set_memory_provider("plugins:\n  enabled:\n    - omh\n", "omh")
+        self.assertTrue(change.changed)
+        self.assertEqual(memory_provider_selection(change.text), "omh")
+
+    def test_an_empty_provider_key_is_treated_as_free(self) -> None:
+        change = set_memory_provider("memory:\n  provider: ''\n", "omh")
+        self.assertTrue(change.changed)
+        self.assertEqual(memory_provider_selection(change.text), "omh")
+
+    def test_another_product_holding_the_slot_is_never_overwritten(self) -> None:
+        # Hermes runs one external provider, so a silent overwrite would switch
+        # off whatever the operator actually chose.
+        original = "memory:\n  provider: honcho\n"
+        change = set_memory_provider(original, "omh")
+        self.assertFalse(change.changed)
+        self.assertEqual(change.text, original)
+        self.assertIn("honcho", change.message)
+
+    def test_taking_a_slot_omh_already_holds_is_a_no_op(self) -> None:
+        self.assertFalse(set_memory_provider("memory:\n  provider: omh\n", "omh").changed)
+
+    def test_only_omh_may_release_the_slot_omh_took(self) -> None:
+        self.assertTrue(clear_memory_provider("memory:\n  provider: omh\n", "omh").changed)
+        self.assertFalse(clear_memory_provider("memory:\n  provider: honcho\n", "omh").changed)
+        self.assertFalse(clear_memory_provider("memory:\n  provider: ''\n", "omh").changed)
+
+    def test_a_provider_key_in_another_section_is_not_mistaken_for_this_one(self) -> None:
+        self.assertEqual(memory_provider_selection("image_gen:\n  provider: openai\n"), "")
+
+
+class MemoryCliTests(unittest.TestCase):
+    def _base(self, root: Path) -> list[str]:
+        return ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+
+    @staticmethod
+    def _json(result: tuple[int, str, str]) -> tuple[int, dict, str]:
+        status, stdout, stderr = result
+        return status, (json.loads(stdout) if stdout.strip() else {}), stderr
+
+    def test_a_block_can_be_written_listed_and_removed_from_the_cli(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = self._base(root)
+            status, payload, stderr = self._json(run_cli(base + ["memory", "block-set", "facts", "--value", "OMH wraps Hermes."]))
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue(payload["written"])
+
+            status, payload, _ = self._json(run_cli(base + ["memory", "blocks"]))
+            self.assertEqual(status, 0)
+            self.assertEqual(payload["block_count"], 1)
+            self.assertEqual(payload["blocks"][0]["label"], "facts")
+
+            status, payload, _ = self._json(run_cli(base + ["memory", "block-remove", "facts"]))
+            self.assertEqual(status, 0)
+            self.assertTrue(payload["removed"])
+
+    def test_an_over_limit_block_fails_the_command_rather_than_truncating(self) -> None:
+        with TemporaryDirectory() as tmp:
+            status, _, stderr = run_cli(
+                self._base(Path(tmp)) + ["memory", "block-set", "facts", "--value", "x" * 40, "--limit", "10"]
+            )
+            self.assertNotEqual(status, 0)
+            self.assertIn("40 chars", stderr)
+
+    def test_the_listing_can_be_narrowed_to_one_tier(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = self._base(root)
+            self._json(run_cli(base + ["memory", "block-set", "always", "--value", "v", "--tier", "system"]))
+            self._json(run_cli(base + ["memory", "block-set", "sometimes", "--value", "v", "--tier", "reference"]))
+            _, payload, _ = self._json(run_cli(base + ["memory", "blocks", "--tier", "reference"]))
+            self.assertEqual([block["label"] for block in payload["blocks"]], ["sometimes"])
+
+    def test_dream_reports_without_evaluating_unless_asked(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            status, payload, stderr = self._json(run_cli(self._base(root) + ["memory", "dream"]))
+            self.assertEqual(status, 0, stderr)
+            self.assertFalse(payload["evaluated"])
+            self.assertNotIn("due", payload)
+            self.assertFalse((root / ".omh" / "memory" / "consolidation.json").exists())
+
+    def test_dream_evaluate_weighs_the_triggers_and_never_consolidates(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_hermes_memory(root / ".hermes", "x" * 2100)
+            status, payload, stderr = self._json(run_cli(self._base(root) + ["memory", "dream", "--evaluate"]))
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue(payload["due"])
+            self.assertIn("not evidence that memory was consolidated", payload["claim_boundary"])
+
+    def test_the_provider_slot_can_be_taken_and_handed_back(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = self._base(root)
+            status, payload, stderr = self._json(run_cli(base + ["memory", "provider", "--enable"]))
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue(payload["is_omh"])
+
+            _, payload, _ = self._json(run_cli(base + ["memory", "provider"]))
+            self.assertEqual(payload["provider"], MEMORY_PROVIDER_NAME)
+            self.assertFalse(payload["changed"])
+
+            _, payload, _ = self._json(run_cli(base + ["memory", "provider", "--disable"]))
+            self.assertTrue(payload["changed"])
+            self.assertFalse(payload["is_omh"])
+
+    def test_enabling_never_evicts_another_product_from_the_slot(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / ".hermes" / "config.yaml"
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text("memory:\n  provider: honcho\n", encoding="utf-8")
+
+            status, payload, stderr = self._json(run_cli(self._base(root) + ["memory", "provider", "--enable"]))
+            self.assertEqual(status, 0, stderr)
+            self.assertFalse(payload["changed"])
+            self.assertEqual(payload["provider"], "honcho")
+            self.assertEqual(config.read_text(encoding="utf-8"), "memory:\n  provider: honcho\n")
+
+    def test_a_dry_run_reports_the_change_without_writing_config(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            status, payload, stderr = self._json(run_cli(self._base(root) + ["memory", "provider", "--enable", "--dry-run"]))
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue(payload["changed"])
+            self.assertFalse((root / ".hermes" / "config.yaml").exists())
+
+
+class DoctorSlotReportTests(unittest.TestCase):
+    """A slot held by something else is why OMH's hooks would not be running."""
+
+    def _doctor(self, root: Path) -> dict:
+        status, stdout, stderr = run_cli(
+            ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes"), "doctor"]
+        )
+        self.assertIn(status, (0, 1), stderr)
+        return json.loads(stdout)
+
+    def _message(self, payload: dict) -> str:
+        return next(
+            str(check["message"]) for check in payload["checks"] if check["name"] == "memory_provider"
+        )
+
+    def test_an_unset_slot_is_reported_without_failing(self) -> None:
+        # Hermes' built-in memory is a fine state; this is an invitation, not a fault.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".hermes").mkdir(parents=True)
+            (root / ".hermes" / "config.yaml").write_text("memory:\n  provider: ''\n", encoding="utf-8")
+            self.assertIn("unset", self._message(self._doctor(root)))
+
+    def test_a_slot_held_by_another_product_is_named(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".hermes").mkdir(parents=True)
+            (root / ".hermes" / "config.yaml").write_text("memory:\n  provider: honcho\n", encoding="utf-8")
+            message = self._message(self._doctor(root))
+            self.assertIn("honcho", message)
+            self.assertIn("not running", message)
+
+    def test_omh_holding_the_slot_reads_as_healthy(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".hermes").mkdir(parents=True)
+            (root / ".hermes" / "config.yaml").write_text("memory:\n  provider: omh\n", encoding="utf-8")
+            self.assertIn("is omh", self._message(self._doctor(root)))
+
+
+class BlockBudgetDefaultTests(unittest.TestCase):
+    def test_the_default_block_limit_fits_beside_hermes_own_cap(self) -> None:
+        # A block that alone exceeded Hermes' 2200-char memory file would make
+        # the always-rendered tier the largest thing in the turn.
+        self.assertLessEqual(DEFAULT_BLOCK_LIMIT_CHARS, 2200)
+
+
+if __name__ == "__main__":
+    unittest.main()

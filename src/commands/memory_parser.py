@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+from ..plugin_bundle.omh.memory_blocks import DEFAULT_BLOCK_LIMIT_CHARS
 from . import memory
 
 
@@ -88,3 +89,32 @@ def add_memory_commands(sub: argparse._SubParsersAction[argparse.ArgumentParser]
     apply.add_argument("--batch", required=True, help="Path to memory_update_batch/v1 JSON, or '-' to read from stdin.")
     apply.add_argument("--dry-run", action="store_true", help="Validate and preview the batch without writing .omh/memory.")
     apply.set_defaults(func=memory.cmd_memory_apply)
+
+    blocks = memory_sub.add_parser("blocks", help="List OMH memory blocks by label, without their values.")
+    blocks.add_argument("--tier", choices=("system", "reference"), default=None, help="Limit the listing to one tier.")
+    blocks.set_defaults(func=memory.cmd_memory_blocks)
+
+    block_set = memory_sub.add_parser("block-set", help="Create or replace one OMH memory block.")
+    block_set.add_argument("label", help="Block label: lowercase letters, digits, '-' or '_'.")
+    block_set.add_argument("--value", default="", help="Block content. Rejected when longer than --limit.")
+    block_set.add_argument("--stdin", action="store_true", help="Read block content from stdin instead of --value.")
+    block_set.add_argument("--description", default="", help="What the block is for; shown to the model beside the value.")
+    block_set.add_argument("--limit", type=int, default=DEFAULT_BLOCK_LIMIT_CHARS, help="Per-block character budget.")
+    block_set.add_argument("--tier", choices=("system", "reference"), default="system", help="'system' renders every turn; 'reference' is listed by label and read on request.")
+    block_set.set_defaults(func=memory.cmd_memory_block_set)
+
+    block_remove = memory_sub.add_parser("block-remove", help="Remove one OMH memory block.")
+    block_remove.add_argument("label")
+    block_remove.add_argument("--tier", choices=("system", "reference"), default="system")
+    block_remove.set_defaults(func=memory.cmd_memory_block_remove)
+
+    dream = memory_sub.add_parser("dream", help="Report whether memory consolidation is due, and why. Never consolidates.")
+    dream.add_argument("--evaluate", action="store_true", help="Weigh the triggers now and write the consolidation handoff when they fire.")
+    dream.set_defaults(func=memory.cmd_memory_dream)
+
+    provider = memory_sub.add_parser("provider", help="Show or change Hermes' single external memory-provider selection.")
+    provider_slot = provider.add_mutually_exclusive_group()
+    provider_slot.add_argument("--enable", action="store_true", help="Point Hermes' memory.provider at OMH. Refused when another provider holds the slot.")
+    provider_slot.add_argument("--disable", action="store_true", help="Hand the slot back, only when OMH currently holds it.")
+    provider.add_argument("--dry-run", action="store_true", help="Report the change without writing Hermes config.")
+    provider.set_defaults(func=memory.cmd_memory_provider)

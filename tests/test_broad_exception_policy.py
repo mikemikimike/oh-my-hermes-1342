@@ -153,6 +153,14 @@ CLASSIFIED_SITES: tuple[ClassifiedSite, ...] = (
         "the truth is that OMH could not read the file.",
     ),
     ClassifiedSite(
+        "src/plugin_bundle/omh/tools/memory_tool.py",
+        "_consolidation",
+        INTENTIONAL,
+        "Returns the distinct `bundle_memory_error` source plus a sanitized error type. Reporting "
+        "`due: false` instead would say consolidation is not needed when the truth is that OMH "
+        "could not work out whether it was.",
+    ),
+    ClassifiedSite(
         "src/plugin_bundle/omh/tools/recommend_tool.py",
         "_recommendations",
         INTENTIONAL,
@@ -164,8 +172,8 @@ CLASSIFIED_SITES: tuple[ClassifiedSite, ...] = (
 # Ruff reports one hit per handler; the inventory is keyed per enclosing
 # function, and `_is_catalog_question` holds two handlers, so the two totals
 # differ by exactly one.
-EXPECTED_HANDLER_COUNT = 12
-EXPECTED_ANCHOR_COUNT = 11
+EXPECTED_HANDLER_COUNT = 13
+EXPECTED_ANCHOR_COUNT = 12
 
 
 class DerivedSite(NamedTuple):

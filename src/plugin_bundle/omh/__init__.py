@@ -28,7 +28,25 @@ def _register_optional_hook(ctx, hook_name: str, callback: object) -> None:
 
 
 def register(ctx):
-    """Register the OMH thin native bridge with Hermes."""
+    """Register the OMH thin native bridge with Hermes.
+
+    Two different loaders call this with two different contexts. The plugin
+    loader passes a context that registers tools and hooks. The *memory
+    provider* loader in ``plugins/memory/__init__.py`` passes a collector whose
+    only real method is ``register_memory_provider`` -- it no-ops the rest -- so
+    running the tool wiring for it would import ten modules to no effect.
+
+    The real plugin context has no ``register_memory_provider``, which is what
+    makes the two safely distinguishable. Mentioning the name here is also what
+    makes this directory visible to Hermes' provider discovery, which text-scans
+    ``__init__.py`` for it.
+    """
+    if hasattr(ctx, "register_memory_provider"):
+        from .memory_provider import OmhMemoryProvider
+
+        ctx.register_memory_provider(OmhMemoryProvider())
+        return
+
     from .hooks.llm_hooks import pre_llm_call
     from .hooks.session_hooks import on_session_end
     from .hooks.tool_hooks import pre_tool_call
