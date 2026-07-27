@@ -17,12 +17,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+import threading
 from typing import Any, Callable
 
 from ..local_store import ensure_dir, ensure_file, file_lock, read_jsonl_objects, utc_now
 from ..paths import OmhPaths, expand_path
 
 WORKTREE_OBSERVATION_SCHEMA_VERSION = "omh_worktree_observation/v1"
+
+_WORKTREE_ADD_LOCK = threading.Lock()
 
 WORKTREE_CLAIM_BOUNDARY = (
     "An observed Git worktree is workspace-isolation evidence only. "
@@ -109,13 +112,19 @@ def ensure_fanout_unit_worktree(
         _append_worktree_record(paths, _observation_record(result))
         return result
     try:
-        completed = runner(
-            ["git", "worktree", "add", str(worktree_path), "-b", branch, base_sha],
-            cwd=str(repo_root),
-            text=True,
-            capture_output=True,
-            timeout=120,
-        )
+        # Dispatch creates unit worktrees from a thread pool, and concurrent
+        # `git worktree add` calls against one repository contend on shared
+        # repo-level lock files (packed-refs/config), which fails
+        # intermittently on slow filesystems. Creation is cheap relative to
+        # the agent run, so it is serialized process-wide.
+        with _WORKTREE_ADD_LOCK:
+            completed = runner(
+                ["git", "worktree", "add", str(worktree_path), "-b", branch, base_sha],
+                cwd=str(repo_root),
+                text=True,
+                capture_output=True,
+                timeout=120,
+            )
     except (OSError, subprocess.TimeoutExpired) as exc:
         result["reason"] = f"git worktree add failed to run: {exc}"
         _append_worktree_record(paths, _observation_record(result))
