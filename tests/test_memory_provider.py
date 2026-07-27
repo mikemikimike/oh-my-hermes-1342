@@ -47,6 +47,7 @@ from omh.plugin_bundle.omh.memory_blocks import (
 )
 from omh.plugin_bundle.omh.memory_dreaming import (
     DEFAULT_TURN_INTERVAL,
+    clear_after_consolidation,
     consolidation_reasons,
     empty_dreaming_state,
     read_dreaming_state,
@@ -186,6 +187,95 @@ class DreamingScheduleTests(unittest.TestCase):
         state = record_memory_write(record_turn(empty_dreaming_state()))
         self.assertEqual(state["turns_since_consolidation"], 1)
         self.assertEqual(state["memory_writes_observed"], 1)
+
+
+class StandingConditionSuppressionTests(unittest.TestCase):
+    """A condition nobody can clear must not be reported on every turn.
+
+    Observed on a live install: 19 consecutive briefs, every one of them reading
+    `headroom_below_floor:289<=300`. Turn counts and compaction flags clear
+    themselves by firing; headroom clears only when somebody consolidates, and
+    OMH cannot -- by design. So the condition re-fired forever and the journal
+    filled with one repeated sentence.
+    """
+
+    HEADROOM = 289
+    FLOOR = 300
+
+    def test_a_standing_condition_is_reported_once_not_every_turn(self) -> None:
+        state = empty_dreaming_state()
+        fired = 0
+        for _ in range(20):
+            state = record_turn(state)
+            reasons = consolidation_reasons(state, headroom_chars=self.HEADROOM, headroom_floor_chars=self.FLOOR)
+            if reasons:
+                fired += 1
+                state = clear_after_consolidation(state, at="t", reasons=reasons)
+        # Once on the first turn, then only when the interval genuinely comes
+        # due. Twenty briefs in twenty turns is what this replaced.
+        self.assertEqual(fired, 4)
+
+    def test_the_condition_still_rides_along_on_a_real_trigger(self) -> None:
+        # Suppression must not hide it: a brief woken by the interval while
+        # memory is nearly full should still say memory is nearly full.
+        state = clear_after_consolidation(
+            empty_dreaming_state(), at="t", reasons=[f"headroom_below_floor:{self.HEADROOM}<={self.FLOOR}"]
+        )
+        for _ in range(DEFAULT_TURN_INTERVAL):
+            state = record_turn(state)
+        reasons = consolidation_reasons(state, headroom_chars=self.HEADROOM, headroom_floor_chars=self.FLOOR)
+        self.assertTrue(any(r.startswith("turn_interval_reached") for r in reasons))
+        self.assertTrue(any(r.startswith("headroom_below_floor") for r in reasons))
+
+    def test_a_changed_condition_fires_immediately(self) -> None:
+        state = clear_after_consolidation(
+            empty_dreaming_state(), at="t", reasons=[f"headroom_below_floor:{self.HEADROOM}<={self.FLOOR}"]
+        )
+        self.assertEqual(consolidation_reasons(state, headroom_chars=self.HEADROOM, headroom_floor_chars=self.FLOOR), [])
+        self.assertTrue(consolidation_reasons(state, headroom_chars=self.HEADROOM - 40, headroom_floor_chars=self.FLOOR))
+
+    def test_duplicate_and_expiry_counts_are_conditions_too(self) -> None:
+        for reason, kwargs in (
+            ("duplicate_records:2", {"duplicate_count": 2}),
+            ("expiring_records:3", {"expiring_count": 3}),
+        ):
+            with self.subTest(reason=reason):
+                state = clear_after_consolidation(empty_dreaming_state(), at="t", reasons=[reason])
+                self.assertEqual(consolidation_reasons(state, **kwargs), [])
+
+    def test_every_event_reason_may_fire_again_at_once(self) -> None:
+        # These describe a moment, and the moment happened again.
+        compaction = clear_after_consolidation(empty_dreaming_state(), at="t", reasons=["context_compaction_observed"])
+        self.assertIn("context_compaction_observed", consolidation_reasons(record_compaction(compaction)))
+
+        turns = clear_after_consolidation(
+            empty_dreaming_state(), at="t", reasons=[f"turn_interval_reached:{DEFAULT_TURN_INTERVAL}/{DEFAULT_TURN_INTERVAL}"]
+        )
+        for _ in range(DEFAULT_TURN_INTERVAL):
+            turns = record_turn(turns)
+        self.assertTrue(any(r.startswith("turn_interval_reached") for r in consolidation_reasons(turns)))
+
+    def test_a_session_ending_still_reports_its_unconsolidated_turns(self) -> None:
+        state = clear_after_consolidation(
+            empty_dreaming_state(), at="t", reasons=["session_ending_with_unconsolidated_turns:3"]
+        )
+        state = record_turn(record_turn(record_turn(state)))
+        reasons = consolidation_reasons(state, session_ending=True)
+        self.assertIn("session_ending_with_unconsolidated_turns:3", reasons)
+
+    def test_the_provider_stops_rewriting_the_same_brief(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_hermes_memory(root / ".hermes", "x" * 2100)
+            provider = OmhMemoryProvider(root / ".omh")
+            provider.initialize("s", hermes_home=str(root / ".hermes"), agent_context="primary")
+            journal = root / ".omh" / "memory" / "consolidation.jsonl"
+
+            for turn in range(1, DEFAULT_TURN_INTERVAL):
+                provider.on_turn_start(turn, "hi")
+            # One brief from `initialize`; the standing condition adds no more
+            # until the interval genuinely comes due.
+            self.assertEqual(len(journal.read_text(encoding="utf-8").splitlines()), 1)
 
 
 class EvictionPlanTests(unittest.TestCase):
@@ -388,9 +478,14 @@ class ProviderLifecycleTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_hermes_memory(root / ".hermes", "x" * 2100)
-            handoff = self._provider(root).consolidation_due()
-            self.assertTrue(any(str(r).startswith("headroom_below_floor") for r in handoff["reasons"]))
-            self.assertEqual(handoff["eviction_plan"]["cap"], 2200)
+            self._provider(root)
+
+            # The pressure is picked up by the evaluation `initialize` already
+            # runs, so the brief exists before anything else asks. Asking again
+            # finds the same standing condition suppressed rather than restated.
+            brief = json.loads((root / ".omh" / "memory" / "consolidation.json").read_text(encoding="utf-8"))
+            self.assertTrue(any(str(r).startswith("headroom_below_floor") for r in brief["reasons"]))
+            self.assertEqual(brief["eviction_plan"]["cap"], 2200)
 
     def test_a_read_only_home_costs_a_journal_line_not_the_turn(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -688,8 +783,16 @@ class MemoryCliTests(unittest.TestCase):
             _write_hermes_memory(root / ".hermes", "x" * 2100)
             status, payload, stderr = self._json(run_cli(self._base(root) + ["memory", "dream", "--evaluate"]))
             self.assertEqual(status, 0, stderr)
-            self.assertTrue(payload["due"])
             self.assertIn("not evidence that memory was consolidated", payload["claim_boundary"])
+            # The brief lands on disk whether or not this particular call is the
+            # one that weighed the trigger: `initialize` evaluates first, and a
+            # standing condition is not restated once it has been reported.
+            self.assertTrue((root / ".omh" / "memory" / "consolidation.json").is_file())
+
+            # Asking twice does not write twice, which is the whole point.
+            before = (root / ".omh" / "memory" / "consolidation.jsonl").read_text(encoding="utf-8")
+            run_cli(self._base(root) + ["memory", "dream", "--evaluate"])
+            self.assertEqual((root / ".omh" / "memory" / "consolidation.jsonl").read_text(encoding="utf-8"), before)
 
     def test_the_provider_slot_can_be_taken_and_handed_back(self) -> None:
         with TemporaryDirectory() as tmp:
