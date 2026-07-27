@@ -177,11 +177,19 @@ class OmhMemoryProvider(_MemoryProviderBase):
             return
         self._append_write_journal(action, target, content, metadata)
         self._mutate_state(record_memory_write)
-        # A Hermes memory write is what an actual consolidation looks like from
-        # here -- its memory tool is the only thing that edits the store. This
-        # is the promptest moment a standing brief can be found no longer true
-        # and retired, instead of waiting for the next turn or session edge.
-        self._evaluate_if_due("memory_write")
+        # Retirement only, and only for consolidation-shaped writes. The first
+        # version routed this through the full evaluation, which had two
+        # measured consequences: every write below the headroom floor re-raised
+        # a brief (the embedded value changes, so suppression never held) and
+        # reset the turn counter, starving the interval trigger and growing the
+        # journal one record per write. And gating on the trigger alone was not
+        # enough either -- an interval-raised brief has its counters cleared at
+        # birth, so ANY 'add' write one moment later looked like consolidation.
+        # Hermes documents the action vocabulary as add/replace/remove:
+        # an 'add' appends new material and consolidates nothing; 'replace' and
+        # 'remove' are what a merge or prune actually emits.
+        if action in ("replace", "remove") and not self._standing_reasons():
+            self._retire_stale_brief("memory_write")
 
     def on_session_end(self, messages: list[dict[str, Any]] | None = None) -> None:
         self._evaluate_if_due("session_end")
@@ -217,25 +225,8 @@ class OmhMemoryProvider(_MemoryProviderBase):
         weighed, not only the ones that fired.
         """
         state = read_dreaming_state(self._omh_home)
-        reading = self._memory_reading()
-        headroom = reading.headroom_chars if reading is not None else None
-        plan = (
-            build_eviction_plan(reading.entries, cap=reading.cap, cap_source=reading.cap_source)
-            if reading is not None
-            else {}
-        )
-        # Two different questions, one evaluation. `reasons` (suppressed) asks
-        # "should a new brief fire now"; `standing` asks "is anything still
-        # true at all". A suppressed standing condition returns [] for the
-        # first while remaining true for the second, and only the second may
-        # decide retirement.
-        reason_kwargs = {
-            "headroom_chars": headroom,
-            "duplicate_count": len(plan.get("duplicate_clusters", []) or []),
-            "session_ending": trigger in _SESSION_ENDING_TRIGGERS,
-        }
+        plan, reason_kwargs = self._evaluation_inputs(trigger)
         reasons = consolidation_reasons(state, **reason_kwargs)
-        standing = consolidation_reasons(state, suppress=False, **reason_kwargs)
         handoff = build_consolidation_handoff(
             reasons,
             block_summaries=[block.to_summary() for block in read_memory_blocks(self._omh_home)],
@@ -243,7 +234,9 @@ class OmhMemoryProvider(_MemoryProviderBase):
             trigger=trigger,
             messages_at_risk=messages_at_risk,
             session_id=self._session_id,
-            raised_at=_utc_now(),
+            # Only a brief that actually fires was raised; stamping the not-due
+            # inspection object gave it a raise time for a raise that never was.
+            raised_at=_utc_now() if reasons else "",
         )
         if reasons:
             self._write_handoff(handoff)
@@ -251,9 +244,31 @@ class OmhMemoryProvider(_MemoryProviderBase):
                 self._omh_home,
                 clear_after_consolidation(state, at=_utc_now(), reasons=reasons),
             )
-        elif not standing and trigger == "memory_write":
-            self._retire_stale_brief(trigger)
         return handoff
+
+    def _evaluation_inputs(self, trigger: str) -> tuple[dict[str, object], dict[str, object]]:
+        """The eviction plan and reason kwargs for one evaluation, no writes."""
+        reading = self._memory_reading()
+        plan = (
+            build_eviction_plan(reading.entries, cap=reading.cap, cap_source=reading.cap_source)
+            if reading is not None
+            else {}
+        )
+        return plan, {
+            "headroom_chars": reading.headroom_chars if reading is not None else None,
+            "duplicate_count": len(plan.get("duplicate_clusters", []) or []),
+            "session_ending": trigger in _SESSION_ENDING_TRIGGERS,
+        }
+
+    def _standing_reasons(self) -> list[str]:
+        """Is anything still true at all? Read-only, suppression bypassed.
+
+        A suppressed standing condition returns [] from the default evaluation
+        while remaining true; retirement must see through that, or it would
+        clear a notice whose fact had not cleared.
+        """
+        _, reason_kwargs = self._evaluation_inputs("memory_write")
+        return consolidation_reasons(read_dreaming_state(self._omh_home), suppress=False, **reason_kwargs)
 
     def _retire_stale_brief(self, trigger: str) -> None:
         """Mark the on-disk brief not-due once consolidation was observed.
@@ -263,13 +278,12 @@ class OmhMemoryProvider(_MemoryProviderBase):
         and every messenger's chat notice repeated forever -- including after
         the user actually consolidated.
 
-        Retirement is gated on the `memory_write` trigger on purpose. A Hermes
-        memory write is what an actual consolidation looks like from here, and
-        it is the only observable signal of one. An empty standing set alone is
-        not enough: event reasons clear themselves the moment they fire -- the
-        turn counter resets -- so an interval-raised brief always looks
-        "no longer standing" one turn later, and retiring on that would erase
-        every notice before anyone could act on it.
+        The only caller is the consolidation-shaped branch of
+        `on_memory_write`: a 'replace' or 'remove' from Hermes' memory tool is
+        what a merge or prune actually emits, and it is the one observable
+        signal that consolidation happened. Timers, reads, and other triggers
+        never retire -- event reasons clear their own counters by firing, so
+        anything looser erases a brief before anyone could act on it.
         """
         brief = read_latest_consolidation(self._omh_home)
         if not brief or not brief.get("due"):

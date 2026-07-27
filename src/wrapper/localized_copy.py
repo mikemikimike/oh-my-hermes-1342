@@ -581,6 +581,8 @@ _CONSOLIDATION_NOTICE_SENTENCES = {
     "ja": "メモリ整理が保留中です（{summary}）。メモリの確認と整理を依頼してください。",
     "zh": "记忆整理待处理（{summary}）。请让我审查并整理记忆。",
     "es": "La consolidación de memoria está pendiente ({summary}). Pídeme revisar y consolidar la memoria.",
+    "fr": "Le rangement de la mémoire est en attente ({summary}). Demandez-moi de revoir et consolider la mémoire.",
+    "de": "Das Aufräumen des Gedächtnisses steht aus ({summary}). Bitte mich, das Gedächtnis zu prüfen und zu konsolidieren.",
 }
 
 _CONSOLIDATION_REASON_PHRASES = {
@@ -590,6 +592,8 @@ _CONSOLIDATION_REASON_PHRASES = {
         "ja": "メモリがほぼ満杯",
         "zh": "记忆几乎已满",
         "es": "la memoria está casi llena",
+        "fr": "la mémoire est presque pleine",
+        "de": "der Speicher ist fast voll",
     },
     "turn_interval_reached": {
         "en": "several turns since the last tidy-up",
@@ -597,6 +601,8 @@ _CONSOLIDATION_REASON_PHRASES = {
         "ja": "前回の整理から数ターン経過",
         "zh": "距上次整理已过多轮",
         "es": "varios turnos desde la última consolidación",
+        "fr": "plusieurs tours depuis le dernier rangement",
+        "de": "mehrere Züge seit dem letzten Aufräumen",
     },
     "session_ending_with_unconsolidated_turns": {
         "en": "a session ended with work not yet consolidated",
@@ -604,6 +610,8 @@ _CONSOLIDATION_REASON_PHRASES = {
         "ja": "未整理の作業を残してセッションが終了",
         "zh": "会话结束时仍有未整理的内容",
         "es": "una sesión terminó con trabajo sin consolidar",
+        "fr": "une session s'est terminée avec du travail non consolidé",
+        "de": "eine Sitzung endete mit nicht konsolidierter Arbeit",
     },
     "context_compaction_observed": {
         "en": "context was compacted",
@@ -611,6 +619,8 @@ _CONSOLIDATION_REASON_PHRASES = {
         "ja": "コンテキストが圧縮された",
         "zh": "上下文已压缩",
         "es": "el contexto fue compactado",
+        "fr": "le contexte a été compacté",
+        "de": "der Kontext wurde komprimiert",
     },
     "duplicate_records": {
         "en": "duplicate memories were detected",
@@ -618,6 +628,8 @@ _CONSOLIDATION_REASON_PHRASES = {
         "ja": "重複した記憶を検出",
         "zh": "检测到重复记忆",
         "es": "se detectaron memorias duplicadas",
+        "fr": "des souvenirs en double ont été détectés",
+        "de": "doppelte Erinnerungen erkannt",
     },
     "expiring_records": {
         "en": "some memories are expiring",
@@ -625,6 +637,8 @@ _CONSOLIDATION_REASON_PHRASES = {
         "ja": "一部の記憶が期限切れ間近",
         "zh": "部分记忆即将过期",
         "es": "algunas memorias están por expirar",
+        "fr": "certains souvenirs arrivent à expiration",
+        "de": "einige Erinnerungen laufen ab",
     },
 }
 
@@ -634,6 +648,8 @@ _CONSOLIDATION_FALLBACK_SUMMARY = {
     "ja": "整理の案内が待機中",
     "zh": "整理提示等待处理",
     "es": "hay un aviso de consolidación en espera",
+    "fr": "un avis de consolidation est en attente",
+    "de": "ein Konsolidierungshinweis wartet",
 }
 
 

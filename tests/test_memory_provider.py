@@ -1225,6 +1225,146 @@ class ChatNoticeOnEveryMessengerTests(unittest.TestCase):
                         self.assertIn(self.NOTICE_KO, str(out["chat_response"]["body"]))
 
 
+class RetirementSignalTests(unittest.TestCase):
+    """Only a consolidation-shaped write may retire a brief.
+
+    The re-review reproduced the gap: an interval-raised brief has its counters
+    cleared at birth, so under trigger-only gating ANY memory write one moment
+    later looked like consolidation and erased the notice before anyone could
+    act. Hermes documents its write actions as add/replace/remove; an 'add'
+    appends new material and consolidates nothing, while 'replace' and 'remove'
+    are what a merge or prune actually emits.
+    """
+
+    def _interval_brief(self, root: Path) -> OmhMemoryProvider:
+        memories = root / ".hermes" / "memories"
+        memories.mkdir(parents=True, exist_ok=True)
+        (memories / "MEMORY.md").write_text("plenty of headroom", encoding="utf-8")
+        provider = OmhMemoryProvider(root / ".omh")
+        provider.initialize("s", hermes_home=str(root / ".hermes"), agent_context="primary")
+        for turn in range(1, DEFAULT_TURN_INTERVAL + 1):
+            provider.on_turn_start(turn, "hi")
+        return provider
+
+    def _due(self, root: Path) -> bool:
+        brief = read_latest_consolidation(root / ".omh")
+        return bool(brief and brief["due"])
+
+    def test_an_unrelated_add_write_never_retires_a_brief(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = self._interval_brief(root)
+            self.assertTrue(self._due(root))
+            provider.on_memory_write("add", "memory", "an unrelated single fact")
+            self.assertTrue(self._due(root))
+
+    def test_a_consolidating_write_retires_when_nothing_stands(self) -> None:
+        with TemporaryDirectory() as tmp:
+            for action in ("replace", "remove"):
+                with self.subTest(action=action):
+                    root = Path(tmp) / action
+                    provider = self._interval_brief(root)
+                    provider.on_memory_write(action, "memory", "merged entries")
+                    self.assertFalse(self._due(root))
+                    brief = read_latest_consolidation(root / ".omh")
+                    self.assertEqual(brief["superseded_by_trigger"], "memory_write")
+
+    def test_a_consolidating_write_does_not_retire_while_pressure_remains(self) -> None:
+        # A 'replace' that fails to clear the condition is not a consolidation
+        # worth retiring over -- the store is still full.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memories = root / ".hermes" / "memories"
+            memories.mkdir(parents=True, exist_ok=True)
+            (memories / "MEMORY.md").write_text("x" * 2100, encoding="utf-8")
+            provider = OmhMemoryProvider(root / ".omh")
+            provider.initialize("s", hermes_home=str(root / ".hermes"), agent_context="primary")
+            provider.on_memory_write("replace", "memory", "still full afterwards")
+            self.assertTrue(self._due(root))
+
+    def test_writes_do_not_reraise_briefs_or_reset_the_turn_counter(self) -> None:
+        # The first retirement path routed writes through the full evaluation:
+        # every write below the headroom floor re-raised a brief (the embedded
+        # value changes, so suppression never held) and reset the turn counter,
+        # starving the interval trigger and growing the journal per write.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memories = root / ".hermes" / "memories"
+            memories.mkdir(parents=True, exist_ok=True)
+            (memories / "MEMORY.md").write_text("x" * 2100, encoding="utf-8")
+            provider = OmhMemoryProvider(root / ".omh")
+            provider.initialize("s", hermes_home=str(root / ".hermes"), agent_context="primary")
+            for turn in range(1, 4):
+                provider.on_turn_start(turn, "hi")
+            journal = root / ".omh" / "memory" / "consolidation.jsonl"
+            turns_before = read_dreaming_state(root / ".omh")["turns_since_consolidation"]
+            records_before = len(journal.read_text(encoding="utf-8").splitlines())
+
+            for index in range(5):
+                (memories / "MEMORY.md").write_text("x" * (2100 + index), encoding="utf-8")
+                provider.on_memory_write("add", "memory", f"fact {index}")
+
+            self.assertEqual(read_dreaming_state(root / ".omh")["turns_since_consolidation"], turns_before)
+            self.assertEqual(len(journal.read_text(encoding="utf-8").splitlines()), records_before)
+
+    def test_a_not_due_inspection_carries_no_raised_at(self) -> None:
+        # Stamping the inspection object gave it a raise time for a raise that
+        # never happened.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = OmhMemoryProvider(root / ".omh")
+            provider.initialize("s", hermes_home=str(root / ".hermes"), agent_context="primary")
+            handoff = provider.consolidation_due()
+            self.assertFalse(handoff["due"])
+            self.assertEqual(handoff["raised_at"], "")
+
+
+class NoticeLocaleCoverageTests(unittest.TestCase):
+    """The notice speaks every locale the copy system supports, gated."""
+
+    def test_the_notice_tables_cover_every_supported_locale(self) -> None:
+        # This repo gates parallel tables so a new locale cannot silently
+        # regress the notice to English; this is that gate.
+        from omh.wrapper.localized_copy import (
+            _CONSOLIDATION_FALLBACK_SUMMARY,
+            _CONSOLIDATION_NOTICE_SENTENCES,
+            _CONSOLIDATION_REASON_PHRASES,
+            SUPPORTED_COPY_LOCALES,
+        )
+
+        expected = set(SUPPORTED_COPY_LOCALES)
+        self.assertEqual(set(_CONSOLIDATION_NOTICE_SENTENCES), expected)
+        self.assertEqual(set(_CONSOLIDATION_FALLBACK_SUMMARY), expected)
+        for family, phrases in _CONSOLIDATION_REASON_PHRASES.items():
+            self.assertEqual(set(phrases), expected, family)
+
+    def test_latin_script_messages_get_their_own_sentence(self) -> None:
+        # The re-review round-tripped every card body through the detector and
+        # found es/fr/de all fell back to English: the Latin-script hints are
+        # user-question phrases that declarative card copy never contains. The
+        # locale now comes from the user's message -- the same input the card
+        # copy itself localized from.
+        from omh.paths import resolve_paths
+        from omh.wrapper.contract import build_chat_interaction_payload
+
+        cases = (
+            ("¿Puedes ayudarme? quiero añadir una función", "La consolidación de memoria está pendiente"),
+            ("Peux-tu m'aider à ajouter une fonctionnalité ?", "Le rangement de la mémoire est en attente"),
+            ("Kannst du mir helfen, eine Funktion hinzuzufügen?", "Das Aufräumen des Gedächtnisses steht aus"),
+        )
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memories = root / ".hermes" / "memories"
+            memories.mkdir(parents=True, exist_ok=True)
+            (memories / "MEMORY.md").write_text("x" * 2100, encoding="utf-8")
+            OmhMemoryProvider(root / ".omh").initialize("s", hermes_home=str(root / ".hermes"), agent_context="primary")
+            paths = resolve_paths(root / ".omh", root / ".hermes")
+            for message, marker in cases:
+                with self.subTest(message=message[:24]):
+                    payload = build_chat_interaction_payload(message, source="slack", paths=paths)
+                    self.assertIn(marker, str(payload["chat_response"]["body"]))
+
+
 class BlockBudgetDefaultTests(unittest.TestCase):
     def test_the_default_block_limit_fits_beside_hermes_own_cap(self) -> None:
         # A block that alone exceeded Hermes' 2200-char memory file would make

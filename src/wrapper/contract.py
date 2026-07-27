@@ -2983,7 +2983,7 @@ def build_chat_interaction_payload(
     # cached branch above never reaches this: it requires `paths is None`, and
     # without an OMH home there is no brief to read.
     if paths is not None:
-        payload = _with_memory_consolidation_notice(payload, paths)
+        payload = _with_memory_consolidation_notice(payload, paths, message)
     return payload
 
 
@@ -6090,7 +6090,9 @@ def _chat_response_with_goal_quality_coaching(
 MEMORY_CONSOLIDATION_NOTICE_SCHEMA_VERSION = "omh_memory_consolidation_notice/v1"
 
 
-def _with_memory_consolidation_notice(payload: dict[str, object], paths: OmhPaths) -> dict[str, object]:
+def _with_memory_consolidation_notice(
+    payload: dict[str, object], paths: OmhPaths, message: str = ""
+) -> dict[str, object]:
     """Carry a pending consolidation brief into the chat card, on every surface.
 
     The scheduler's decision used to reach an operator only through
@@ -6138,8 +6140,14 @@ def _with_memory_consolidation_notice(payload: dict[str, object], paths: OmhPath
     state["memory_consolidation"] = {"due": True, "next_action": "ask_hermes_to_consolidate_memory"}
     updated["state"] = state
     body = str(updated.get("body", ""))
+    # The locale comes from the user's message through the same detector the
+    # card copy used, not from the rendered card text. Re-deriving from the
+    # card was exact for CJK scripts but lossy for Latin ones: the detector's
+    # Latin-script hints are user-question phrases ("quiero", "peux-tu"), which
+    # declarative card copy does not contain, so es/fr/de cards read as English
+    # and got an English suffix -- the exact glitch this line exists to avoid.
     notice_line = consolidation_notice_line(
-        detect_copy_locale(f"{updated.get('headline', '')} {body}"), reasons
+        detect_copy_locale(message or f"{updated.get('headline', '')} {body}"), reasons
     )
     if notice_line not in body:
         updated["body"] = f"{body} {notice_line}".strip()
