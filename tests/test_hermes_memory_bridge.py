@@ -27,12 +27,14 @@ load_local_package()
 from omh.maintenance import advisory
 from omh.maintenance.advisory import MEMORY_STALE_AFTER_DAYS, check_hermes_memory_staleness
 from omh.plugin_bundle.omh.hermes_memory import (
+    DEFAULT_MEMORY_FILE_CAP_CHARS,
+    DEFAULT_USER_FILE_CAP_CHARS,
     HERMES_MEMORY_DELIMITER,
-    MEMORY_FILE_CAP_CHARS,
     memory_char_count,
     nearest_entry,
     parse_memory_entries,
     read_hermes_memory,
+    resolve_memory_caps,
     similarity,
 )
 from omh.memory import (
@@ -81,8 +83,8 @@ class UnitTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             home = Path(tmp)
             path = _write_memory(home, KOREAN_ENTRY)
-            self.assertGreater(path.stat().st_size, MEMORY_FILE_CAP_CHARS)
-            self.assertLess(len(KOREAN_ENTRY), MEMORY_FILE_CAP_CHARS)
+            self.assertGreater(path.stat().st_size, DEFAULT_MEMORY_FILE_CAP_CHARS)
+            self.assertLess(len(KOREAN_ENTRY), DEFAULT_MEMORY_FILE_CAP_CHARS)
 
             entry = check_hermes_memory_staleness(home)
             self.assertEqual(entry.status, "ok")
@@ -98,14 +100,14 @@ class UnitTests(unittest.TestCase):
             self.assertEqual(len(reading.entries), 2)
             self.assertEqual(reading.chars, memory_char_count(("alpha", KOREAN_ENTRY)))
             self.assertFalse(reading.over_cap)
-            self.assertEqual(reading.headroom_chars, MEMORY_FILE_CAP_CHARS - reading.chars)
+            self.assertEqual(reading.headroom_chars, DEFAULT_MEMORY_FILE_CAP_CHARS - reading.chars)
 
 
 class CapTests(unittest.TestCase):
     def test_over_cap_is_advice_even_when_freshly_written(self) -> None:
         with TemporaryDirectory() as tmp:
             home = Path(tmp)
-            _write_memory(home, "x" * (MEMORY_FILE_CAP_CHARS + 1))
+            _write_memory(home, "x" * (DEFAULT_MEMORY_FILE_CAP_CHARS + 1))
             entry = check_hermes_memory_staleness(home)
             # Age alone used to decide this, so a full file touched today read
             # as ok while Hermes was already rejecting the next write.
@@ -123,7 +125,131 @@ class CapTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             reading = read_hermes_memory(Path(tmp))[0]
             self.assertFalse(reading.exists)
-            self.assertEqual(reading.headroom_chars, MEMORY_FILE_CAP_CHARS)
+            self.assertEqual(reading.headroom_chars, DEFAULT_MEMORY_FILE_CAP_CHARS)
+
+
+class ConfiguredCapTests(unittest.TestCase):
+    """The cap is Hermes' config, not OMH's constant.
+
+    Hermes builds its memory tool with ``mem_config.get("memory_char_limit",
+    2200)``, so 2200/1375 are its fallbacks. OMH hardcoded them, which reported
+    a file as over cap with no headroom left while Hermes was still accepting
+    writes -- invisible on any host that had never changed the default.
+    """
+
+    def _home(self, tmp: str, config: str | None = None) -> Path:
+        home = Path(tmp)
+        if config is not None:
+            home.mkdir(parents=True, exist_ok=True)
+            (home / "config.yaml").write_text(config, encoding="utf-8")
+        return home
+
+    def test_a_raised_cap_leaves_headroom_the_default_would_deny(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = self._home(tmp, "memory:\n  memory_char_limit: 5000\n")
+            _write_memory(home, "x" * (DEFAULT_MEMORY_FILE_CAP_CHARS + 500))
+
+            reading = read_hermes_memory(home)[0]
+            self.assertEqual(reading.cap, 5000)
+            self.assertEqual(reading.cap_source, "config")
+            self.assertFalse(reading.over_cap)
+            self.assertEqual(reading.headroom_chars, 5000 - reading.chars)
+
+    def test_a_lowered_cap_is_honoured_too(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = self._home(tmp, "memory:\n  memory_char_limit: 500\n")
+            _write_memory(home, "x" * 600)
+
+            reading = read_hermes_memory(home)[0]
+            self.assertEqual(reading.cap, 500)
+            self.assertTrue(reading.over_cap)
+            self.assertEqual(reading.headroom_chars, 0)
+
+    def test_each_file_reads_its_own_key(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = self._home(tmp, "memory:\n  memory_char_limit: 5000\n  user_char_limit: 4000\n")
+            self.assertEqual(
+                resolve_memory_caps(home),
+                (("MEMORY.md", 5000, "config"), ("USER.md", 4000, "config")),
+            )
+
+    def test_one_configured_key_leaves_the_other_on_its_default(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = self._home(tmp, "memory:\n  user_char_limit: 4000\n")
+            self.assertEqual(
+                resolve_memory_caps(home),
+                (
+                    ("MEMORY.md", DEFAULT_MEMORY_FILE_CAP_CHARS, "default"),
+                    ("USER.md", 4000, "config"),
+                ),
+            )
+
+    def test_absent_config_falls_back_to_the_defaults(self) -> None:
+        with TemporaryDirectory() as tmp:
+            self.assertEqual(
+                resolve_memory_caps(Path(tmp)),
+                (
+                    ("MEMORY.md", DEFAULT_MEMORY_FILE_CAP_CHARS, "default"),
+                    ("USER.md", DEFAULT_USER_FILE_CAP_CHARS, "default"),
+                ),
+            )
+
+    def test_the_dotted_config_form_is_read(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = self._home(tmp, "memory.memory_char_limit: 3300\n")
+            self.assertEqual(resolve_memory_caps(home)[0], ("MEMORY.md", 3300, "config"))
+
+    def test_quotes_and_inline_comments_are_stripped(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = self._home(tmp, 'memory:\n  memory_char_limit: "3300"  # raised for Korean\n')
+            self.assertEqual(resolve_memory_caps(home)[0], ("MEMORY.md", 3300, "config"))
+
+    def test_a_key_outside_the_memory_section_is_not_borrowed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = self._home(tmp, "other:\n  memory_char_limit: 9999\n")
+            self.assertEqual(resolve_memory_caps(home)[0][1], DEFAULT_MEMORY_FILE_CAP_CHARS)
+
+    def test_an_unusable_value_reports_the_default_rather_than_a_measured_cap(self) -> None:
+        # A malformed cap must not become a headroom figure that reads as observed.
+        for value in ("abc", "0", "-1", "", "5000.5"):
+            with self.subTest(value=value), TemporaryDirectory() as tmp:
+                home = self._home(tmp, f"memory:\n  memory_char_limit: {value}\n")
+                self.assertEqual(
+                    resolve_memory_caps(home)[0],
+                    ("MEMORY.md", DEFAULT_MEMORY_FILE_CAP_CHARS, "default"),
+                )
+
+    def test_an_unreadable_config_falls_back_instead_of_raising(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "config.yaml").mkdir(parents=True)
+            self.assertEqual(resolve_memory_caps(home)[0][2], "default")
+
+    def test_advisory_does_not_flag_a_file_under_its_raised_cap(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = self._home(tmp, "memory:\n  memory_char_limit: 5000\n")
+            _write_memory(home, "x" * (DEFAULT_MEMORY_FILE_CAP_CHARS + 500))
+            # Hardcoding 2200 made this "advice" while Hermes still accepted writes.
+            self.assertEqual(check_hermes_memory_staleness(home).status, "ok")
+
+    def test_promotion_headroom_follows_the_configured_cap(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = resolve_paths(root / ".omh", root / ".hermes")
+            hermes_home = root / ".hermes"
+            hermes_home.mkdir(parents=True, exist_ok=True)
+            (hermes_home / "config.yaml").write_text(
+                "memory:\n  memory_char_limit: 5000\n", encoding="utf-8"
+            )
+            capture = capture_project_memory_candidate(paths, "격리된 사실 " * 40, scope_ref="demo")
+            approve_project_memory_candidate(paths, str(capture["candidate"]["candidate_id"]))
+            _write_memory(hermes_home, "x" * (DEFAULT_MEMORY_FILE_CAP_CHARS - 10))
+
+            bridge = build_hermes_memory_bridge(paths)
+            # The same record does not fit under the default cap; it does under 5000.
+            self.assertTrue(bridge["promotable"][0]["fits_headroom"])
+            self.assertEqual(bridge["files"][0]["cap"], 5000)
+            self.assertEqual(bridge["files"][0]["cap_source"], "config")
 
 
 class SimilarityTests(unittest.TestCase):
@@ -175,7 +301,7 @@ class BridgeTests(unittest.TestCase):
             root = Path(tmp)
             paths = resolve_paths(root / ".omh", root / ".hermes")
             self._approved(paths, "격리된 사실 " * 40)
-            _write_memory(root / ".hermes", "x" * (MEMORY_FILE_CAP_CHARS - 10))
+            _write_memory(root / ".hermes", "x" * (DEFAULT_MEMORY_FILE_CAP_CHARS - 10))
 
             promotable = build_hermes_memory_bridge(paths)["promotable"]
             self.assertEqual(len(promotable), 1)

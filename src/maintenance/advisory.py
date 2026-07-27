@@ -44,10 +44,12 @@ AUXILIARY_TASK_SLOTS = (
     "title",
 )
 
-# Hermes memory files and the character caps Hermes enforces on write. Sourced
-# from the reader so the cap and the unit it is measured in cannot drift apart.
-MEMORY_FILE_CAP_CHARS = hermes_memory.MEMORY_FILE_CAP_CHARS
-USER_FILE_CAP_CHARS = hermes_memory.USER_FILE_CAP_CHARS
+# Hermes memory files and the caps Hermes falls back to when config.yaml does
+# not override them. Sourced from the reader so the cap and the unit it is
+# measured in cannot drift apart; the per-file cap actually in force comes from
+# the reading, not from these.
+DEFAULT_MEMORY_FILE_CAP_CHARS = hermes_memory.DEFAULT_MEMORY_FILE_CAP_CHARS
+DEFAULT_USER_FILE_CAP_CHARS = hermes_memory.DEFAULT_USER_FILE_CAP_CHARS
 MEMORY_STALE_AFTER_DAYS = 30
 
 # Conservative SOUL starter heuristic knobs.
@@ -331,9 +333,10 @@ def check_hermes_memory_staleness(hermes_home: str | Path | None = None) -> Advi
         "OMH reports on Hermes memory and cannot change Hermes memory."
     )
     remediation = (
-        "OMH reports only and cannot change Hermes memory (memories/MEMORY.md ~2,200 "
-        "chars, USER.md ~1,375 chars). If these look stale, update them from inside "
-        "Hermes; OMH will not write to them."
+        "OMH reports only and cannot change Hermes memory (memories/MEMORY.md and "
+        "USER.md, each capped by memory.memory_char_limit / memory.user_char_limit in "
+        "Hermes config.yaml). If these look stale, update them from inside Hermes; "
+        "OMH will not write to them."
     )
     readings = hermes_memory.read_hermes_memory(home, now=_now_seconds())
     if not any(reading.exists for reading in readings):
