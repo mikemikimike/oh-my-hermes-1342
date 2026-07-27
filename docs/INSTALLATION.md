@@ -372,10 +372,10 @@ ambiguity in current Hermes CLI releases while installing the same
 Install additional workflow skills when you want direct Hermes skill surfaces:
 
 ```sh
-hermes skills install deep-interview
-hermes skills install ralplan
-hermes skills install web-research
-hermes skills install code-review
+hermes skills install ulw-interview
+hermes skills install ulw-plan
+hermes skills install ulw-research
+hermes skills install omh-code-review
 ```
 
 This path reads the tap-compatible skill pack under `skills/` in this
@@ -1211,7 +1211,7 @@ omh docs skill-context-cost --json   # omh_skill_context_cost/v1
 Repetition is derived, not hand-classified: for each `##` heading the report
 counts occurrences, distinct bodies, and the duplicate bytes an install pays
 for the second and later copies. Policy shared by every generated workflow
-skill lives once in `skills/oh-my-hermes/references/skill-common-rail.md`
+skill lives once in `skills/omh-routing/references/skill-common-rail.md`
 (progressive disclosure, loaded on demand) rather than inside each body; that
 reference ships with the always-installed `oh-my-hermes` skill, so both
 profiles resolve it. Reference bytes are reported separately from the

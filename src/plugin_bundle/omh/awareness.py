@@ -5627,10 +5627,17 @@ def _canonical_workflow_by_display_name() -> dict[str, str]:
         ("ulw-qa", "ultraqa"),
         ("ulw-work", "ultrawork"),
     ):
-        mapping.pop(f"omh-{workflow}", None)
-        mapping.pop(f"ulw-{workflow}", None)
         if workflow in workflows:
             mapping[display] = workflow
+            # Earlier releases rendered `omh-<workflow>` (pre-ulw era) and the
+            # mechanical `ulw-<workflow>`; stale agents still echo both, so
+            # they stay resolvable as historical aliases of the same workflow
+            # instead of being dropped. Mirrors
+            # `skills/catalog_types.historical_skill_display_names`.
+            mapping.setdefault(f"omh-{workflow}", workflow)
+        else:
+            mapping.pop(f"omh-{workflow}", None)
+            mapping.pop(f"ulw-{workflow}", None)
     return mapping
 
 

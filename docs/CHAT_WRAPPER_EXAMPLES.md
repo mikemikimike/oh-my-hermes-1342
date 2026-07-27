@@ -294,7 +294,7 @@ Example plan effect:
 
 ```text
 Hermes Agent  BOT
-[omh] ralplan - I routed this to `omh-ralplan` because it needs a safe plan first.
+[omh] ralplan - I routed this to `ulw-plan` because it needs a safe plan first.
 
 Accept or revise the plan first; the handoff button stays disabled until
 acceptance. A draft plan is still only planning evidence.

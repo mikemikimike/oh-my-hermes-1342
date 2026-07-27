@@ -104,7 +104,16 @@ def install_skill_pack(
         refreshable = {
             template.name
             for template in all_templates
-            if template.name in CORE_PROFILE_SKILLS or skill_directory_name(template.name) in installed
+            if template.name in CORE_PROFILE_SKILLS
+            or skill_directory_name(template.name) in installed
+            # A pre-relabel install has the CANONICAL directory on disk and the
+            # labelled one absent, so matching only the label dropped the skill
+            # from refresh entirely: the labelled replacement was never
+            # written, the relabel pruner then kept the old directory ("no
+            # replacement yet"), and the host kept serving the stale pre-label
+            # SKILL.md forever. The canonical name keeps it refreshable so one
+            # update writes the labelled directory and prunes the old one.
+            or template.name in installed
         }
         templates = [template for template in all_templates if template.name in refreshable]
         reference_templates = [

@@ -92,6 +92,7 @@ from .catalog_types import (
     _CODING_INTENT_BY_SKILL,
     _feature_surface_skill,
     canonical_hermes_role,
+    historical_skill_display_names,
     omh_description,
     omh_skill_display_name,
 )

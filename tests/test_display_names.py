@@ -22,7 +22,7 @@ from omh.plugin_bundle.omh.awareness import awareness_route_hint
 from omh.plugin_bundle.omh.degradation import DEGRADATION_CHAT_NOTE
 from omh.routing.chat import route_chat_message
 from omh.routing.display_names import canonical_display_mentions
-from omh.skills.catalog import installable_skill_definitions, omh_skill_display_name
+from omh.skills.catalog import historical_skill_display_names, installable_skill_definitions, omh_skill_display_name
 from omh.wrapper.contract import build_chat_interaction_payload
 from omh.wrapper.route_hints import build_chat_route_hint_payload
 
@@ -229,7 +229,38 @@ class DisplayNameEchoBackRoutingTests(unittest.TestCase):
         self.assertEqual(mapping["omh-routing"], "oh-my-hermes")
         for display, canonical in mapping.items():
             with self.subTest(display=display):
-                self.assertEqual(omh_skill_display_name(canonical), display)
+                allowed = (omh_skill_display_name(canonical), *historical_skill_display_names(canonical))
+                self.assertIn(display, allowed)
+        # The current label always wins its slot; historical aliases only ever
+        # add entries, never replace one.
+        for display, canonical in mapping.items():
+            if display == omh_skill_display_name(canonical):
+                continue
+            with self.subTest(alias=display):
+                self.assertIn(omh_skill_display_name(canonical), mapping)
+
+
+class HistoricalLabelAliasTests(unittest.TestCase):
+    """Renamed labels stay resolvable: stale agents echo the era they installed."""
+
+    def test_historical_labels_resolve_to_the_same_workflow_as_current_ones(self) -> None:
+        for old, canonical in (
+            ("omh-ultragoal", "ultragoal"),
+            ("omh-ultrawork", "ultrawork"),
+            ("omh-ralplan", "ralplan"),
+            ("ulw-ultrawork", "ultrawork"),
+            ("omh-strategy-brief", "strategy-brief"),
+        ):
+            with self.subTest(old=old):
+                route = route_chat_message(f"use {old} for this", source="discord")
+                current = route_chat_message(f"use {omh_skill_display_name(canonical)} for this", source="discord")
+                self.assertEqual(route["selected_skill"], current["selected_skill"], old)
+
+    def test_awareness_map_carries_the_pre_ulw_labels(self) -> None:
+        mapping = awareness_module._canonical_workflow_by_display_name()
+        self.assertEqual(mapping.get("omh-ultragoal"), "ultragoal")
+        self.assertEqual(mapping.get("ulw-ultrawork"), "ultrawork")
+        self.assertEqual(mapping.get("ulw-goal"), "ultragoal")
 
 
 class DisplayNamesLeaveDegradationRenderingAloneTests(unittest.TestCase):

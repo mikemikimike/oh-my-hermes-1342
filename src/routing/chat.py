@@ -53,6 +53,7 @@ from ..quality.skill_governance import build_skill_governance_policy, resolve_sk
 from ..surfaces.evidence_copy import not_evidence_action_suffix, not_evidence_reply_suffix
 from ..skills.catalog import (
     SkillDefinition,
+    historical_skill_display_names,
     omh_skill_display_name,
     primary_harness_for_skill,
     routable_definitions,
@@ -1405,8 +1406,18 @@ def public_chat_route_payload(
 
 @lru_cache(maxsize=1)
 def _canonical_skill_by_display_name() -> dict[str, str]:
-    """Map every rendered `omh-` label back to the catalog name that owns routing."""
-    return {omh_skill_display_name(definition.name): definition.name for definition in routable_definitions()}
+    """Map every rendered `omh-`/`ulw-` label back to the catalog name that owns routing.
+
+    Historical labels earlier releases rendered (`omh-ultragoal`,
+    `ulw-ultrawork`) resolve too: stale agents, memories, and docs still echo
+    them, and a silent miss on a rename is how one workflow ends up addressed
+    by three names. Current labels always win a collision.
+    """
+    mapping = {omh_skill_display_name(definition.name): definition.name for definition in routable_definitions()}
+    for definition in routable_definitions():
+        for alias in historical_skill_display_names(definition.name):
+            mapping.setdefault(alias, definition.name)
+    return mapping
 
 
 def _with_canonical_display_names(routing_message: str) -> str:

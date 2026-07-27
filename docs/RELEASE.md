@@ -16,7 +16,7 @@ Hermes-native skill install:
 
 ```sh
 hermes skills tap add rlaope/oh-my-hermes
-hermes skills install rlaope/oh-my-hermes/skills/oh-my-hermes --yes
+hermes skills install rlaope/oh-my-hermes/skills/omh-routing --yes
 ```
 
 Pinned stable install:
@@ -385,7 +385,7 @@ The live smoke runs the selected Hermes install path plus:
 hermes skills tap list
 hermes skills list --enabled-only
 hermes skills check oh-my-hermes
-hermes skills inspect rlaope/oh-my-hermes/skills/oh-my-hermes
+hermes skills inspect rlaope/oh-my-hermes/skills/omh-routing
 ```
 
 Passing the tap smoke means Hermes CLI install/list/check/inspect commands

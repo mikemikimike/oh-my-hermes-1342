@@ -64,7 +64,7 @@ uv run python -m omh.cli cases demo --all --json > examples/use-cases/g1-g10-dem
 
 Every added skill grows the always-loaded prompt body of a `full` install.
 Check what it cost, and keep shared policy in
-`skills/oh-my-hermes/references/skill-common-rail.md` instead of a new
+`skills/omh-routing/references/skill-common-rail.md` instead of a new
 repeated section in `workflow_skill`:
 
 ```sh

@@ -68,6 +68,43 @@ class InstallerSkillProfileTests(unittest.TestCase):
             self.assertEqual(sorted(result["relabelled_skills_removed"]), sorted(relabelled))
             self.assertEqual(result["relabelled_skills_retained"], [])
 
+    def test_a_core_refresh_migrates_a_pre_relabel_only_directory(self) -> None:
+        """The refresh gate must accept the pre-relabel directory name.
+
+        A pre-relabel install has only `skills/<canonical>/` on disk. Matching the
+        refresh gate on the labelled name alone dropped such a skill from refresh
+        entirely: the labelled replacement was never written, the relabel pruner
+        then kept the old directory ("no replacement yet"), and the host kept
+        serving the stale pre-label SKILL.md forever — the observed
+        `Reading skill ultragoal` long after the catalog moved to `ulw-goal`.
+        """
+        with TemporaryDirectory() as tmp:
+            paths = resolve_paths(Path(tmp) / ".omh", Path(tmp) / ".hermes")
+            install_skill_pack(paths, profile="core")
+            victim = next(
+                name
+                for name in sorted(installable_skill_names())
+                if skill_directory_name(name) != name and name not in CORE_PROFILE_SKILLS
+            )
+            legacy = paths.skills_dir / victim
+            legacy.mkdir(parents=True, exist_ok=True)
+            (legacy / "SKILL.md").write_text(f"---\nname: {victim}\n---\nstale pre-relabel render\n", encoding="utf-8")
+            write_manifest(
+                paths.manifest_path,
+                new_manifest("builtin", paths.skills_dir, skill_records(paths.skills_dir, "builtin")),
+            )
+
+            result = install_skill_pack(paths, profile="core", force=True)
+
+            labelled = paths.skills_dir / skill_directory_name(victim)
+            self.assertTrue((labelled / "SKILL.md").is_file(), "labelled replacement was not written")
+            self.assertFalse(legacy.exists(), "pre-relabel directory survived the refresh")
+            self.assertIn(victim, result["relabelled_skills_removed"])
+            self.assertIn(
+                f"name: {skill_directory_name(victim)}",
+                (labelled / "SKILL.md").read_text(encoding="utf-8"),
+            )
+
     def test_a_locally_edited_pre_relabel_directory_blocks_the_install(self) -> None:
         """The migration never gets to delete an edit; the existing guard stops first.
 

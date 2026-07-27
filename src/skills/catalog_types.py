@@ -86,9 +86,10 @@ ULW_ENGINE_SKILL_NAMES = frozenset(
 def omh_skill_display_name(name: str) -> str:
     """Return the rendered frontmatter label for a canonical catalog name.
 
-    This is a display identifier only. The canonical `SkillDefinition.name` still
-    owns the `skills/<name>/` directory, the install manifest, the tap URL,
-    routing keys, and every CLI argument.
+    This is a display identifier that, since the relabel, also names the
+    `skills/<label>/` install directory. The canonical `SkillDefinition.name`
+    still owns the install manifest `name`, routing keys, and every CLI
+    argument.
     """
     text = name.strip()
     override = OMH_SKILL_DISPLAY_NAME_OVERRIDES.get(text)
@@ -98,6 +99,24 @@ def omh_skill_display_name(name: str) -> str:
     if text.startswith(prefix):
         return text
     return f"{prefix}{text}"
+
+
+def historical_skill_display_names(name: str) -> tuple[str, ...]:
+    """Return display labels earlier releases rendered for this canonical name.
+
+    Two label eras shipped before the current one: `omh-<name>` for every
+    skill, then `ulw-<name>` for the workflow engines before their labels were
+    shortened (`ulw-ultrawork` → `ulw-work`). Stale agents, memories, and docs
+    still echo those forms, so routing accepts them as aliases of the current
+    label instead of letting them silently miss. Current labels always win a
+    collision; a rename here is deliberately additive.
+    """
+    text = name.strip()
+    current = omh_skill_display_name(text)
+    candidates = [f"{OMH_SKILL_NAME_PREFIX}{text}"]
+    if text in ULW_ENGINE_SKILL_NAMES:
+        candidates.append(f"{ULW_SKILL_NAME_PREFIX}{text}")
+    return tuple(candidate for candidate in candidates if candidate != current)
 
 
 _ROLE_BY_CATEGORY = {
