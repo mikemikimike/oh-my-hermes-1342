@@ -58,6 +58,7 @@ from .memory_dreaming import (
     read_dreaming_state,
     read_latest_consolidation,
     record_compaction,
+    record_consolidation_observed,
     record_memory_write,
     record_turn,
     write_dreaming_state,
@@ -188,8 +189,16 @@ class OmhMemoryProvider(_MemoryProviderBase):
         # Hermes documents the action vocabulary as add/replace/remove:
         # an 'add' appends new material and consolidates nothing; 'replace' and
         # 'remove' are what a merge or prune actually emits.
-        if action in ("replace", "remove") and not self._standing_reasons():
-            self._retire_stale_brief("memory_write")
+        if action in ("replace", "remove"):
+            # The consolidation the turn counter is named after just happened,
+            # so the clock restarts BEFORE the standing check. Observed live
+            # without this: the counter survived the consolidation, so the very
+            # session that tidied memory raised a fresh
+            # `session_ending_with_unconsolidated_turns` brief at its own exit,
+            # and every tidy-up ended by requesting the next one.
+            self._mutate_state(record_consolidation_observed)
+            if not self._standing_reasons():
+                self._retire_stale_brief("memory_write")
 
     def on_session_end(self, messages: list[dict[str, Any]] | None = None) -> None:
         self._evaluate_if_due("session_end")

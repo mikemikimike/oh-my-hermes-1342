@@ -126,6 +126,26 @@ def record_memory_write(state: dict[str, Any]) -> dict[str, object]:
     return updated
 
 
+def record_consolidation_observed(state: dict[str, Any]) -> dict[str, object]:
+    """A consolidation-shaped write happened; the clock restarts here.
+
+    `turns_since_consolidation` reset only when a BRIEF fired, never when the
+    consolidation itself did -- despite the name. Observed live: a session
+    whose only work was consolidating memory still ended with turns > 0, so
+    `session_ending_with_unconsolidated_turns` raised a fresh brief at the
+    exit of the very session that had just consolidated. Every tidy-up ended
+    by requesting the next one.
+
+    A replace/remove from Hermes' memory tool is the consolidation the counter
+    is named after, so it zeroes the turn count and lowers the compaction
+    flag: both describe work waiting to be consolidated, and it just was.
+    """
+    updated = dict(state)
+    updated["turns_since_consolidation"] = 0
+    updated["compaction_pending"] = False
+    return updated
+
+
 def clear_after_consolidation(state: dict[str, Any], *, at: str, reasons: list[str]) -> dict[str, object]:
     updated = dict(state)
     updated["turns_since_consolidation"] = 0

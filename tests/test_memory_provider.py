@@ -1319,6 +1319,76 @@ class RetirementSignalTests(unittest.TestCase):
             self.assertEqual(handoff["raised_at"], "")
 
 
+class ConsolidationResetsTheClockTests(unittest.TestCase):
+    """A session whose work WAS the consolidation must end quiet.
+
+    Observed live: Hermes consolidated MEMORY.md (six removes, two adds,
+    1921 -> 1122 chars), the headroom brief retired mid-session -- and then the
+    session ended and raised `session_ending_with_unconsolidated_turns:1`,
+    because `turns_since_consolidation` reset only when a BRIEF fired, never
+    when the consolidation itself did. Every tidy-up ended by requesting the
+    next one.
+    """
+
+    def _consolidating_session(self, root: Path) -> OmhMemoryProvider:
+        memories = root / ".hermes" / "memories"
+        memories.mkdir(parents=True, exist_ok=True)
+        (memories / "MEMORY.md").write_text("x" * 2100, encoding="utf-8")
+        provider = OmhMemoryProvider(root / ".omh")
+        provider.initialize("s", hermes_home=str(root / ".hermes"), agent_context="primary")
+        provider.on_turn_start(1, "기억 정리해줘")
+        (memories / "MEMORY.md").write_text("consolidated" * 20, encoding="utf-8")
+        for _ in range(3):
+            provider.on_memory_write("remove", "memory", "")
+        provider.on_memory_write("add", "memory", "merged summary")
+        return provider
+
+    def test_a_consolidating_write_restarts_the_turn_clock(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._consolidating_session(root)
+            state = read_dreaming_state(root / ".omh")
+            self.assertEqual(state["turns_since_consolidation"], 0)
+            self.assertFalse(state["compaction_pending"])
+
+    def test_the_session_that_consolidated_ends_without_raising(self) -> None:
+        # The live failure: retirement worked mid-session, then the session's
+        # own exit re-raised. Both halves are asserted.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = self._consolidating_session(root)
+            self.assertFalse(read_latest_consolidation(root / ".omh")["due"])
+            provider.on_session_end([])
+            self.assertFalse(read_latest_consolidation(root / ".omh")["due"])
+
+    def test_a_session_that_did_not_consolidate_still_raises_at_exit(self) -> None:
+        # Loss prevention is the reason the session-ending bar exists; a plain
+        # append is not a consolidation and must not silence it.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".hermes" / "memories").mkdir(parents=True)
+            (root / ".hermes" / "memories" / "MEMORY.md").write_text("small", encoding="utf-8")
+            provider = OmhMemoryProvider(root / ".omh")
+            provider.initialize("s", hermes_home=str(root / ".hermes"), agent_context="primary")
+            provider.on_turn_start(1, "hi")
+            provider.on_memory_write("add", "memory", "a new fact")
+            provider.on_session_end([])
+            brief = read_latest_consolidation(root / ".omh")
+            self.assertTrue(brief["due"])
+            self.assertIn("session_ending_with_unconsolidated_turns:1", brief["reasons"])
+
+    def test_turns_after_the_consolidation_count_from_zero(self) -> None:
+        # The interval restarts at the consolidation, not at the last brief.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = self._consolidating_session(root)
+            for turn in range(2, DEFAULT_TURN_INTERVAL + 1):
+                provider.on_turn_start(turn, "hi")
+            self.assertFalse(read_latest_consolidation(root / ".omh")["due"])
+            provider.on_turn_start(DEFAULT_TURN_INTERVAL + 1, "hi")
+            self.assertTrue(read_latest_consolidation(root / ".omh")["due"])
+
+
 class NoticeLocaleCoverageTests(unittest.TestCase):
     """The notice speaks every locale the copy system supports, gated."""
 
