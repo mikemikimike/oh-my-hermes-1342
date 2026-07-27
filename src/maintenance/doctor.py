@@ -16,6 +16,7 @@ from ..hashutil import sha256_file
 from ..local_store import can_write_dir
 from ..manifest import local_modifications, read_manifest
 from ..paths import OmhPaths
+from ..plugin_bundle.omh.memory_dreaming import read_dreaming_state, read_latest_consolidation
 from ..plugin_bundle.omh.metadata import MEMORY_PROVIDER_NAME
 from ..plugin_observations import (
     PLUGIN_HOST_ACTIVE_OBSERVATION_EVENTS,
@@ -127,6 +128,7 @@ def run_doctor(paths: OmhPaths) -> list[Check]:
     checks.append(Check("external_dir", external_registered, f"{paths.skills_dir} in skills.external_dirs"))
     checks.append(_skill_shadowing_check(paths, dirs))
     checks.append(_memory_provider_check(config_text))
+    checks.append(_memory_consolidation_check(paths))
     checks.append(
         Check(
             "runtime_context",
@@ -284,6 +286,35 @@ def run_doctor(paths: OmhPaths) -> list[Check]:
             )
         )
     return checks
+
+
+def _memory_consolidation_check(paths: OmhPaths) -> Check:
+    """Say what the newest consolidation brief is asking for.
+
+    The scheduler decided memory was worth consolidating and wrote a brief. Up
+    to now nothing read it back, so the decision lived in a JSON file an
+    operator had no reason to open: OMH knew memory was nearly full and said so
+    only to itself.
+
+    Never a fault. OMH cannot run the consolidation -- that needs a model -- and
+    it cannot tell whether Hermes already did, so an outstanding brief is a
+    thing to know rather than a thing that is broken.
+    """
+    brief = read_latest_consolidation(paths.omh_home)
+    if not brief:
+        return Check("memory_consolidation", True, "No memory consolidation is pending", observed=True)
+    reasons = [str(reason) for reason in brief.get("reasons", []) if isinstance(reason, str)]
+    if not brief.get("due") or not reasons:
+        return Check("memory_consolidation", True, "No memory consolidation is pending", observed=True)
+    at = str(read_dreaming_state(paths.omh_home).get("last_consolidated_at", "") or "unknown time")
+    return Check(
+        "memory_consolidation",
+        True,
+        f"Memory consolidation is due ({', '.join(reasons)}), raised at {at} by {brief.get('trigger', 'unknown')}. "
+        "Ask Hermes to review and consolidate its memory; OMH prepared the brief and cannot run it.",
+        severity="warning",
+        observed=True,
+    )
 
 
 def _memory_provider_check(config_text: str) -> Check:

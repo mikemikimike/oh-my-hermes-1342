@@ -51,6 +51,7 @@ from omh.plugin_bundle.omh.memory_dreaming import (
     consolidation_reasons,
     empty_dreaming_state,
     read_dreaming_state,
+    read_latest_consolidation,
     record_compaction,
     record_memory_write,
     record_turn,
@@ -952,6 +953,77 @@ class SetupTurnsMemoryOnTests(unittest.TestCase):
             self.assertEqual(status, 0, stderr)
             self.assertTrue(json.loads(stdout)["changed"])
             self.assertFalse(json.loads(stdout)["is_omh"])
+
+
+class DoctorSurfacesTheBriefTests(unittest.TestCase):
+    """The scheduler's decision has to reach a human somewhere.
+
+    A brief was written to `consolidation.json` and nothing read it back, so
+    OMH knew memory was nearly full and said so only to itself. Doctor is where
+    an operator already looks.
+
+    It is a warning, never a fault: OMH cannot run the consolidation, and it
+    cannot tell whether Hermes already did.
+    """
+
+    def _checks(self, root: Path) -> dict[str, dict]:
+        status, stdout, stderr = run_cli(
+            ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes"), "doctor"]
+        )
+        self.assertIn(status, (0, 1), stderr)
+        return {check["name"]: check for check in json.loads(stdout)["checks"]}
+
+    def _fire_a_brief(self, root: Path) -> None:
+        _write_hermes_memory(root / ".hermes", "x" * 2100)
+        provider = OmhMemoryProvider(root / ".omh")
+        provider.initialize("s", hermes_home=str(root / ".hermes"), agent_context="primary")
+
+    def test_a_pending_brief_is_reported_with_its_reasons(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._fire_a_brief(root)
+            check = self._checks(root)["memory_consolidation"]
+            self.assertEqual(check["severity"], "warning")
+            self.assertIn("headroom_below_floor", check["message"])
+            self.assertIn("consolidat", check["message"].lower())
+
+    def test_a_pending_brief_never_fails_the_install(self) -> None:
+        # OMH cannot run the consolidation and cannot tell whether Hermes has,
+        # so an outstanding brief is a thing to know, not a thing that is broken.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._fire_a_brief(root)
+            self.assertTrue(self._checks(root)["memory_consolidation"]["ok"])
+
+    def test_no_brief_reads_as_nothing_pending(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            check = self._checks(root)["memory_consolidation"]
+            self.assertEqual(check["severity"], "ok")
+            self.assertIn("No memory consolidation is pending", check["message"])
+
+    def test_an_unreadable_brief_reads_as_nothing_pending(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / ".omh" / "memory" / "consolidation.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{not json", encoding="utf-8")
+            self.assertEqual(self._checks(root)["memory_consolidation"]["severity"], "ok")
+
+    def test_a_brief_that_was_not_due_is_not_reported_as_pending(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = OmhMemoryProvider(root / ".omh")
+            provider.initialize("s", hermes_home=str(root / ".hermes"), agent_context="primary")
+            # Nothing fired, so no brief was written at all.
+            self.assertEqual(self._checks(root)["memory_consolidation"]["severity"], "ok")
+
+    def test_the_reader_is_defensive_about_the_schema(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "memory" / "consolidation.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"schema_version": "something_else/v1"}), encoding="utf-8")
+            self.assertIsNone(read_latest_consolidation(tmp))
 
 
 class BlockBudgetDefaultTests(unittest.TestCase):

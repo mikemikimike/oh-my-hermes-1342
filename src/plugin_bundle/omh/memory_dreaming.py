@@ -270,6 +270,29 @@ def build_consolidation_handoff(
     }
 
 
+def consolidation_path(omh_home: str | Path) -> Path:
+    return Path(omh_home).expanduser() / "memory" / "consolidation.json"
+
+
+def read_latest_consolidation(omh_home: str | Path) -> dict[str, Any] | None:
+    """The newest brief on disk, or None when there is none to read.
+
+    Never raises. A brief nobody can read is a brief nobody has to act on, and
+    an unreadable file must not take down whatever asked -- `omh doctor`, in
+    the case this exists for.
+    """
+    path = consolidation_path(omh_home)
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema_version") != DREAMING_HANDOFF_SCHEMA_VERSION:
+        return None
+    return data
+
+
 def normalize_dreaming_mode(value: str | None) -> str:
     mode = str(value or "").strip().lower()
     return mode if mode in DREAMING_MODES else DEFAULT_DREAMING_MODE
