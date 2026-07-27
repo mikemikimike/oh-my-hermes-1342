@@ -965,5 +965,95 @@ class UpdateRefreshesTheBundleTests(unittest.TestCase):
             self.assertEqual(marker.read_text(encoding="utf-8"), "# edited outside OMH\n")
 
 
+class UpdateCarriesRegistrationTests(unittest.TestCase):
+    """`omh setup` is meant to be run once, and it stopped being.
+
+    Every release that added something to Hermes' config which only setup wrote
+    made setup a recurring chore: update refreshed skills and the bundle, the
+    new key never landed, and the instruction became "run setup again". The
+    memory-provider slot was the latest instance and will not be the last.
+    """
+
+    def _base(self, root: Path) -> list[str]:
+        return ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+
+    def _config(self, root: Path) -> Path:
+        return root / ".hermes" / "config.yaml"
+
+    def _downgrade(self, root: Path) -> None:
+        """Make a registered install look like one from before the slot existed."""
+        config = self._config(root)
+        config.write_text(config.read_text(encoding="utf-8").replace("  provider: omh", "  provider: ''"), encoding="utf-8")
+
+    def test_update_alone_brings_a_registered_install_up_to_date(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(self._base(root) + ["setup"])
+            self._downgrade(root)
+            self.assertIn("provider: ''", self._config(root).read_text(encoding="utf-8"))
+
+            status, _, stderr = run_cli(self._base(root) + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertIn("provider: omh", self._config(root).read_text(encoding="utf-8"))
+
+    def test_update_does_not_register_an_install_setup_never_registered(self) -> None:
+        # Someone who unregistered OMH deliberately must not have update put it
+        # back, and a first registration stays setup's to make.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            status, _, stderr = run_cli(self._base(root) + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertFalse(self._config(root).exists())
+
+    def test_update_never_takes_a_slot_another_product_holds(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(self._base(root) + ["setup"])
+            config = self._config(root)
+            config.write_text(config.read_text(encoding="utf-8").replace("  provider: omh", "  provider: honcho"), encoding="utf-8")
+
+            status, _, stderr = run_cli(self._base(root) + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertIn("provider: honcho", config.read_text(encoding="utf-8"))
+
+    def test_a_dry_run_update_rewrites_no_config(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(self._base(root) + ["setup"])
+            self._downgrade(root)
+            before = self._config(root).read_text(encoding="utf-8")
+
+            status, _, stderr = run_cli(self._base(root) + ["update", "--dry-run"])
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(self._config(root).read_text(encoding="utf-8"), before)
+
+    def test_update_is_idempotent_once_registration_is_current(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(self._base(root) + ["setup"])
+            run_cli(self._base(root) + ["update"])
+            before = self._config(root).read_text(encoding="utf-8")
+            run_cli(self._base(root) + ["update"])
+            self.assertEqual(self._config(root).read_text(encoding="utf-8"), before)
+
+    def test_setup_is_not_needed_a_second_time_for_a_new_registration(self) -> None:
+        # The whole point: one setup, then update forever.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(self._base(root) + ["setup"])
+            self._downgrade(root)
+            (self._bundle_stray(root)).write_text("# older bundle\n", encoding="utf-8")
+
+            run_cli(self._base(root) + ["update"])
+
+            config = self._config(root).read_text(encoding="utf-8")
+            self.assertIn("provider: omh", config)
+            self.assertIn(str(root / ".omh" / "skills"), config)
+            self.assertFalse(self._bundle_stray(root).exists())
+
+    def _bundle_stray(self, root: Path) -> Path:
+        return root / ".hermes" / "plugins" / "omh" / "stray_from_an_older_version.py"
+
+
 if __name__ == "__main__":
     unittest.main()

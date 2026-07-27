@@ -193,7 +193,33 @@ def cmd_update(args: argparse.Namespace) -> int:
     code = cmd_install(args)
     if code == 0:
         _refresh_installed_plugin_bundle(args)
+        _refresh_hermes_registration(args)
     return code
+
+
+def _refresh_hermes_registration(args: argparse.Namespace) -> dict[str, object] | None:
+    """Carry a registered install forward to what the running version needs.
+
+    `omh setup` is meant to be a one-time act. It stopped being one the moment
+    a release added something to Hermes' config that only setup wrote: update
+    refreshed skills and the bundle, the new key never landed, and the fix was
+    to tell people to run setup again. The memory-provider slot was exactly
+    that, and it will not be the last.
+
+    Only for an install that is already registered -- the skills directory is
+    already in `skills.external_dirs`. Registering a fresh one stays setup's
+    job, and someone who deliberately unregistered OMH must not have update
+    put it back.
+    """
+    paths = _paths(args)
+    if str(paths.skills_dir) not in external_dirs(read_config(paths.hermes_config_path)):
+        return None
+    try:
+        return _apply_result(args)
+    except OmhError:
+        # An update must not fail over a config it cannot rewrite; `omh doctor`
+        # reports the gap with the command that repairs it.
+        return None
 
 
 def _refresh_installed_plugin_bundle(args: argparse.Namespace) -> dict[str, object] | None:
