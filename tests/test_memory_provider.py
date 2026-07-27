@@ -1026,6 +1026,126 @@ class DoctorSurfacesTheBriefTests(unittest.TestCase):
             self.assertIsNone(read_latest_consolidation(tmp))
 
 
+class ChatNoticeOnEveryMessengerTests(unittest.TestCase):
+    """A pending consolidation brief reaches chat, whatever the messenger.
+
+    `omh doctor` surfaced the brief for people who run commands. Someone talking
+    to Hermes from Slack or Telegram never runs commands, so for them the brief
+    did not exist. The notice attaches at the one seam every chat surface passes
+    through, so covering the seam covers Slack, Telegram, Discord, CLI, and
+    desktop at once.
+    """
+
+    NOTICE_LINE = "Memory tidy-up is pending"
+
+    def _due_paths(self, root: Path):
+        from omh.paths import resolve_paths
+
+        memories = root / ".hermes" / "memories"
+        memories.mkdir(parents=True, exist_ok=True)
+        (memories / "MEMORY.md").write_text("x" * 2100, encoding="utf-8")
+        provider = OmhMemoryProvider(root / ".omh")
+        provider.initialize("s", hermes_home=str(root / ".hermes"), agent_context="primary")
+        return resolve_paths(root / ".omh", root / ".hermes")
+
+    def _payload(self, paths, source: str) -> dict:
+        from omh.wrapper.contract import build_chat_interaction_payload
+
+        return build_chat_interaction_payload("이 레포에 기능 하나 안전하게 추가하고 싶어", source=source, paths=paths)
+
+    def test_every_chat_source_carries_the_notice_in_its_rendered_body(self) -> None:
+        from omh.ingress import CHAT_SOURCES
+
+        with TemporaryDirectory() as tmp:
+            paths = self._due_paths(Path(tmp))
+            for source in sorted(CHAT_SOURCES):
+                with self.subTest(source=source):
+                    payload = self._payload(paths, source)
+                    notice = payload.get("memory_consolidation_notice")
+                    self.assertIsInstance(notice, dict)
+                    self.assertIn("not evidence", str(notice["claim_boundary"]))
+                    body = str(payload["chat_response"]["body"])
+                    self.assertIn(self.NOTICE_LINE, body)
+                    rendering = payload["chat_response"].get("messenger_rendering")
+                    if isinstance(rendering, dict):
+                        self.assertIn(self.NOTICE_LINE, str(rendering.get("body_text", "")))
+
+    def test_the_routed_card_is_not_displaced(self) -> None:
+        # Additive means additive: same kind, same headline, one extra sentence.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            from omh.paths import resolve_paths
+
+            clean = resolve_paths(root / ".clean-omh", root / ".clean-hermes")
+            control = self._payload(clean, "slack")["chat_response"]
+            noticed = self._payload(self._due_paths(root), "slack")["chat_response"]
+            self.assertEqual(noticed["kind"], control["kind"])
+            self.assertEqual(noticed["headline"], control["headline"])
+            self.assertTrue(str(noticed["body"]).startswith(str(control["body"])))
+
+    def test_no_brief_means_no_notice_anywhere(self) -> None:
+        with TemporaryDirectory() as tmp:
+            from omh.paths import resolve_paths
+
+            paths = resolve_paths(Path(tmp) / ".omh", Path(tmp) / ".hermes")
+            payload = self._payload(paths, "telegram")
+            self.assertNotIn("memory_consolidation_notice", payload)
+            self.assertNotIn(self.NOTICE_LINE, str(payload["chat_response"]["body"]))
+
+    def test_an_unreadable_brief_degrades_to_no_notice(self) -> None:
+        with TemporaryDirectory() as tmp:
+            from omh.paths import resolve_paths
+
+            root = Path(tmp)
+            broken = root / ".omh" / "memory" / "consolidation.json"
+            broken.parent.mkdir(parents=True, exist_ok=True)
+            broken.write_text("{not json", encoding="utf-8")
+            payload = self._payload(resolve_paths(root / ".omh", root / ".hermes"), "slack")
+            self.assertNotIn("memory_consolidation_notice", payload)
+
+    def test_messenger_copy_carries_no_filesystem_paths(self) -> None:
+        # A Slack channel is a shared surface; a local path in the body leaks
+        # the operator's machine layout to everyone in it.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = self._payload(self._due_paths(root), "slack")
+            body = str(payload["chat_response"]["body"])
+            self.assertNotIn(str(root), body)
+            self.assertNotIn("/Users/", body)
+            self.assertNotIn(".omh", body)
+
+    def test_the_cached_pathless_call_stays_notice_free(self) -> None:
+        # The cache key excludes any OMH home, so a cached payload must never
+        # carry state it could not have read.
+        from omh.wrapper.contract import build_chat_interaction_payload
+
+        payload = build_chat_interaction_payload("hello", source="slack")
+        self.assertNotIn("memory_consolidation_notice", payload)
+
+    def test_the_real_plugin_tool_carries_it_on_both_paths(self) -> None:
+        from omh.plugin_bundle.omh.tools.chat_tool import omh_interact_handler
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            self._due_paths(root)
+            with patch.dict(os.environ, {"OMH_HOME": str(root / ".omh"), "HERMES_HOME": str(root / ".hermes")}):
+                for record_session in (True, False):
+                    with self.subTest(record_session=record_session):
+                        out = json.loads(
+                            omh_interact_handler(
+                                {
+                                    "message": "PR 하나 올리고 싶은데 도와줘",
+                                    "source": "slack",
+                                    "record_session": record_session,
+                                    "omh_home": str(root / ".omh"),
+                                    "hermes_home": str(root / ".hermes"),
+                                }
+                            )
+                        )
+                        self.assertIn("memory_consolidation_notice", out)
+                        self.assertIn(self.NOTICE_LINE, str(out["chat_response"]["body"]))
+
+
 class BlockBudgetDefaultTests(unittest.TestCase):
     def test_the_default_block_limit_fits_beside_hermes_own_cap(self) -> None:
         # A block that alone exceeded Hermes' 2200-char memory file would make

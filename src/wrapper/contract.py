@@ -31,6 +31,7 @@ from ..operator_productivity import build_agent_operator_productivity_card
 from ..paths import OmhPaths, resolve_paths
 from ..plugin_bundle.omh.awareness import workflow_context_card_for_workflow, workflow_context_cards
 from ..plugin_bundle.omh.degradation import degradation_chat_note
+from ..plugin_bundle.omh.memory_dreaming import read_dreaming_state, read_latest_consolidation
 from ..probe import probe_capabilities
 from ..quickstart import build_quickstart_card
 from ..skills.catalog import (
@@ -2962,7 +2963,7 @@ def build_chat_interaction_payload(
             )
         )
 
-    return _build_chat_interaction_payload_uncached(
+    payload = _build_chat_interaction_payload_uncached(
         event_or_message,
         source=source,
         mode=mode,
@@ -2975,6 +2976,14 @@ def build_chat_interaction_payload(
         paths=paths,
         skill_policy=skill_policy,
     )
+    # Attached at the one point every chat surface passes through -- the plugin
+    # tool's session and no-session paths both land here -- so Slack, Telegram,
+    # Discord, CLI, and desktop all carry the notice from a single seam. The
+    # cached branch above never reaches this: it requires `paths is None`, and
+    # without an OMH home there is no brief to read.
+    if paths is not None:
+        payload = _with_memory_consolidation_notice(payload, paths)
+    return payload
 
 
 def _can_use_chat_interaction_cache(
@@ -6075,6 +6084,80 @@ def _chat_response_with_goal_quality_coaching(
         actions.append(_action("state_goal_success_criteria", "State success criteria", "secondary"))
     updated["actions"] = actions
     return updated
+
+
+# A standing brief is one short sentence in chat, not a dump of the scheduler's
+# reason strings. The raw reasons ride in the structured notice for wrappers;
+# the body line is for a person reading Slack on a phone.
+_CONSOLIDATION_REASON_PHRASES = {
+    "headroom_below_floor": "memory is nearly full",
+    "turn_interval_reached": "several turns since the last tidy-up",
+    "session_ending_with_unconsolidated_turns": "a session ended with work not yet consolidated",
+    "context_compaction_observed": "context was compacted",
+    "duplicate_records": "duplicate memories were detected",
+    "expiring_records": "some memories are expiring",
+}
+
+MEMORY_CONSOLIDATION_NOTICE_SCHEMA_VERSION = "omh_memory_consolidation_notice/v1"
+
+
+def _with_memory_consolidation_notice(payload: dict[str, object], paths: OmhPaths) -> dict[str, object]:
+    """Carry a pending consolidation brief into the chat card, on every surface.
+
+    The scheduler's decision used to reach an operator only through
+    `omh doctor` -- a command. Someone talking to Hermes from Slack or Telegram
+    never runs commands, so for them the brief did not exist. This is the same
+    fact, delivered where the conversation already is.
+
+    Additive on purpose: the routed card keeps its kind, headline, and actions,
+    and the notice is one body sentence plus structured state. It carries no
+    filesystem paths -- messenger copy leaks them to shared channels -- and the
+    body is appended before the render profile is recomputed, so each
+    messenger's own constraints shape it exactly like the rest of the card.
+    """
+    brief = read_latest_consolidation(paths.omh_home)
+    if not brief or not brief.get("due"):
+        return payload
+    reasons = [str(reason) for reason in brief.get("reasons", []) if isinstance(reason, str)]
+    if not reasons:
+        return payload
+    phrases: list[str] = []
+    for reason in reasons:
+        phrase = _CONSOLIDATION_REASON_PHRASES.get(reason.split(":", 1)[0])
+        if phrase and phrase not in phrases:
+            phrases.append(phrase)
+    summary = "; ".join(phrases) if phrases else "a consolidation brief is waiting"
+    payload = dict(payload)
+    payload["memory_consolidation_notice"] = {
+        "schema_version": MEMORY_CONSOLIDATION_NOTICE_SCHEMA_VERSION,
+        "due": True,
+        "trigger": str(brief.get("trigger", "") or ""),
+        "reasons": reasons,
+        "raised_at": str(read_dreaming_state(paths.omh_home).get("last_consolidated_at", "") or ""),
+        "next_action": "ask_hermes_to_consolidate_memory",
+        "redaction_policy": "metadata_only",
+        "claim_boundary": (
+            "A consolidation notice is prepared context. It is not evidence that memory was "
+            "consolidated, that Hermes read the brief, or that any entry changed."
+        ),
+    }
+    response = payload.get("chat_response")
+    if not isinstance(response, dict):
+        return payload
+    updated = dict(response)
+    state = dict(_nested(updated, "state"))
+    state["memory_consolidation"] = {"due": True, "next_action": "ask_hermes_to_consolidate_memory"}
+    updated["state"] = state
+    notice_line = f"Memory tidy-up is pending ({summary}). Ask me to review and consolidate memory."
+    body = str(updated.get("body", ""))
+    if notice_line not in body:
+        updated["body"] = f"{body} {notice_line}".strip()
+    payload["chat_response"] = _chat_response_with_render_profile(
+        updated,
+        source=str(payload.get("source", "generic")),
+        source_metadata=_nested(payload, "source_metadata"),
+    )
+    return payload
 
 
 def _finish_interaction(payload: dict[str, object], target_notice: dict[str, object] | None) -> dict[str, object]:
