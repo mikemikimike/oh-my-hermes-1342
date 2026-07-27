@@ -331,7 +331,6 @@ _FEATURE_SURFACE_SKILLS = (
             "file delivery",
             "file deliverable status",
             "generated file",
-            "자료",
             "첨부",
             "첨부 상태",
             "전달 상태",

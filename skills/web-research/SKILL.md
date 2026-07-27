@@ -78,6 +78,8 @@ Quality bar:
 
 - Ask for the research question, source boundaries, freshness, jurisdiction, and version assumptions before retrieval.
 - Use official or primary sources first when current or external facts matter, then add source diversity when the topic is contested.
+- Revise the search plan when new evidence exposes a gap or contradiction instead of stopping at the first pass.
+- For contested or consequential claims, run one counter-search for disconfirming sources and back the claim with a primary source or mark it unresolved.
 - Separate direct evidence, citation links, retrieval dates, inference, confidence, and residual uncertainty.
 - Name retrieval gaps when Hermes or the wrapper cannot access the web.
 - For AI or usability research, separate target-user/task assumptions, measured or reported usability dimensions, and generalizability limits from the evidence.

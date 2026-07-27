@@ -5447,11 +5447,12 @@ def _research_brief_guard_applies(normalized_query: str, query_tokens: set[str])
             "research brief",
         ),
     )
+    business_subject = bool({"vendor", "vendors", "market", "competitor", "analytics"} & query_tokens)
     if phrase:
         return True
     if _research_department_guard_applies(normalized_query, query_tokens):
         return False
-    return phrase or (compare and research_subject and evidence)
+    return (compare and research_subject and evidence) or (compare and business_subject)
 
 
 def _strategy_brief_guard_applies(normalized_query: str, query_tokens: set[str]) -> bool:

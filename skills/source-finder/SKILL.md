@@ -85,6 +85,7 @@ Quality bar:
 - Record acquisition state from: candidate_prepared, link_observed, download_link_prepared, download_observed, file_hash_recorded, text_extraction_observed, license_checked, verification_observed, downstream_selected.
 - Separate candidate preparation, observed link, observed download, file hash, text extraction, license check, verification, and downstream selection.
 - Attach observation provenance before treating any acquisition state as evidence.
+- Vary search angles across official docs, academic work, implementations, datasets, and criticism until each requested source kind has candidates or another angle change adds nothing new.
 - Recommend the next downstream workflow without pretending that downstream work already ran.
 
 Handoff policy:

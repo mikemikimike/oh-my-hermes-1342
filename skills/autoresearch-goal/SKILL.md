@@ -76,6 +76,7 @@ Quality tier: `validator-gated`
 Quality bar:
 
 - Define validator criteria before gathering evidence.
+- Run each cycle as evidence-gap closure: name the open gaps the cycle targets, then stop at the validator criteria or the declared iteration budget, whichever comes first.
 - Keep durable research artifacts separate from coding execution evidence.
 - Stop with next questions or a source-backed synthesis when validation is incomplete.
 

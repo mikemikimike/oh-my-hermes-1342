@@ -64,7 +64,7 @@ Bad example:
 
 Use when correctness depends on current official or upstream guidance.
 
-    Strong routing signals: `best-practice-research`, `best practice`, `official docs`, `upstream guidance`
+    Strong routing signals: `best-practice-research`, `best practice`, `official docs`, `upstream guidance`, `what do the docs say`, `check the docs`
 
 ## Catalog Metadata
 

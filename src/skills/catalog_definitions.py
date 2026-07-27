@@ -671,6 +671,8 @@ _DEFINITIONS = [
         quality_bar=(
             "Ask for the research question, source boundaries, freshness, jurisdiction, and version assumptions before retrieval.",
             "Use official or primary sources first when current or external facts matter, then add source diversity when the topic is contested.",
+            "Revise the search plan when new evidence exposes a gap or contradiction instead of stopping at the first pass.",
+            "For contested or consequential claims, run one counter-search for disconfirming sources and back the claim with a primary source or mark it unresolved.",
             "Separate direct evidence, citation links, retrieval dates, inference, confidence, and residual uncertainty.",
             "Name retrieval gaps when Hermes or the wrapper cannot access the web.",
             "For AI or usability research, separate target-user/task assumptions, measured or reported usability dimensions, and generalizability limits from the evidence.",
@@ -764,6 +766,7 @@ _DEFINITIONS = [
             "Record acquisition state from: " + ", ".join(SOURCE_FINDER_ACQUISITION_STATES) + ".",
             "Separate candidate preparation, observed link, observed download, file hash, text extraction, license check, verification, and downstream selection.",
             "Attach observation provenance before treating any acquisition state as evidence.",
+            "Vary search angles across official docs, academic work, implementations, datasets, and criticism until each requested source kind has candidates or another angle change adds nothing new.",
             "Recommend the next downstream workflow without pretending that downstream work already ran.",
         ),
         why_this_exists=(
@@ -837,6 +840,8 @@ _DEFINITIONS = [
         quality_tier="source-gated",
         quality_bar=(
             "State the research question, source boundaries, and recency assumptions before synthesis.",
+            "Record each material claim as a compact evidence row: claim, source, source date, confidence, and unresolved conflict.",
+            "Keep claims that lack corroboration in an explicit unresolved list instead of asserting or silently dropping them.",
             "Separate observed sources, source quality, source diversity, inferred trends, and unresolved uncertainty.",
             "Use the brief to feed strategy or meeting work without calling it execution evidence.",
         ),
@@ -3804,7 +3809,7 @@ _DEFINITIONS = [
     SkillDefinition(
         "best-practice-research",
         "Hermes adaptation for bounded official/upstream best-practice research.",
-        ("best-practice-research", "best practice", "official docs", "upstream guidance"),
+        ("best-practice-research", "best practice", "official docs", "upstream guidance", "what do the docs say", "check the docs"),
         "Use when correctness depends on current official or upstream guidance.",
         category="research",
         phase="evidence",
@@ -3837,6 +3842,7 @@ _DEFINITIONS = [
         quality_tier="validator-gated",
         quality_bar=(
             "Define validator criteria before gathering evidence.",
+            "Run each cycle as evidence-gap closure: name the open gaps the cycle targets, then stop at the validator criteria or the declared iteration budget, whichever comes first.",
             "Keep durable research artifacts separate from coding execution evidence.",
             "Stop with next questions or a source-backed synthesis when validation is incomplete.",
         ),

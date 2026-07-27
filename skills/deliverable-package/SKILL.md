@@ -65,7 +65,7 @@ Bad example:
 
 Use when Hermes should prepare, request generation, QA, and report attachment status for user-visible file deliverables.
 
-    Strong routing signals: `deliverable-package`, `deliverable mode`, `file attachment`, `attach file`, `attachment status`, `file delivery`, `file deliverable status`, `generated file`, `자료`, `첨부`, `첨부 상태`, `전달 상태`
+    Strong routing signals: `deliverable-package`, `deliverable mode`, `file attachment`, `attach file`, `attachment status`, `file delivery`, `file deliverable status`, `generated file`, `첨부`, `첨부 상태`, `전달 상태`
 
 ## Catalog Metadata
 

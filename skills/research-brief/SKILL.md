@@ -76,6 +76,8 @@ Quality tier: `source-gated`
 Quality bar:
 
 - State the research question, source boundaries, and recency assumptions before synthesis.
+- Record each material claim as a compact evidence row: claim, source, source date, confidence, and unresolved conflict.
+- Keep claims that lack corroboration in an explicit unresolved list instead of asserting or silently dropping them.
 - Separate observed sources, source quality, source diversity, inferred trends, and unresolved uncertainty.
 - Use the brief to feed strategy or meeting work without calling it execution evidence.
 

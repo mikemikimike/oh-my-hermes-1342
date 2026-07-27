@@ -72,7 +72,10 @@ FROZEN_HANGUL_TRIGGERS_BY_SKILL: dict[str, int] = {
     "cto-loop": 6,
     "data-analysis": 13,
     "deep-interview": 5,
-    "deliverable-package": 4,
+    # 2026-07-27: bare "자료" removed - a generic research-shaded noun that stole
+    # reference/data-finding prompts from the research lane via substring phrase
+    # match; "첨부"/"전달" phrases still cover the deliverables intent.
+    "deliverable-package": 3,
     "deploy-and-monitor": 9,
     "design-orchestration": 4,
     "design-quality-gate": 5,

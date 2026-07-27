@@ -636,6 +636,8 @@ These surfaces are generated command references, not installed Hermes workflow s
 - Quality bar:
   - Ask for the research question, source boundaries, freshness, jurisdiction, and version assumptions before retrieval.
   - Use official or primary sources first when current or external facts matter, then add source diversity when the topic is contested.
+  - Revise the search plan when new evidence exposes a gap or contradiction instead of stopping at the first pass.
+  - For contested or consequential claims, run one counter-search for disconfirming sources and back the claim with a primary source or mark it unresolved.
   - Separate direct evidence, citation links, retrieval dates, inference, confidence, and residual uncertainty.
   - Name retrieval gaps when Hermes or the wrapper cannot access the web.
   - For AI or usability research, separate target-user/task assumptions, measured or reported usability dimensions, and generalizability limits from the evidence.
@@ -704,6 +706,7 @@ These surfaces are generated command references, not installed Hermes workflow s
   - Record acquisition state from: candidate_prepared, link_observed, download_link_prepared, download_observed, file_hash_recorded, text_extraction_observed, license_checked, verification_observed, downstream_selected.
   - Separate candidate preparation, observed link, observed download, file hash, text extraction, license check, verification, and downstream selection.
   - Attach observation provenance before treating any acquisition state as evidence.
+  - Vary search angles across official docs, academic work, implementations, datasets, and criticism until each requested source kind has candidates or another angle change adds nothing new.
   - Recommend the next downstream workflow without pretending that downstream work already ran.
 - Completion checklist:
   - Source kinds, source boundaries, and downstream intent are named.
@@ -764,6 +767,8 @@ These surfaces are generated command references, not installed Hermes workflow s
   - Why: The request lacks the required inputs or would overclaim work that Hermes did not observe.
 - Quality bar:
   - State the research question, source boundaries, and recency assumptions before synthesis.
+  - Record each material claim as a compact evidence row: claim, source, source date, confidence, and unresolved conflict.
+  - Keep claims that lack corroboration in an explicit unresolved list instead of asserting or silently dropping them.
   - Separate observed sources, source quality, source diversity, inferred trends, and unresolved uncertainty.
   - Use the brief to feed strategy or meeting work without calling it execution evidence.
 - Completion checklist:
@@ -3076,7 +3081,7 @@ These surfaces are generated command references, not installed Hermes workflow s
 - Do not use when:
   - The request is casual chat, a status-only acknowledgement, or another workflow has stronger routing evidence.
   - The user needs implementation, review, CI, merge, or external publishing evidence that has not been delegated or observed.
-- Strong routing signals: `best-practice-research`, `best practice`, `official docs`, `upstream guidance`
+- Strong routing signals: `best-practice-research`, `best practice`, `official docs`, `upstream guidance`, `what do the docs say`, `check the docs`
 - Good example:
   - Prompt: best-practice-research: check official docs and upstream examples before we choose the plugin packaging pattern.
   - Expected behavior: Gather primary-source guidance, compare options, and separate evidence from recommendation.
@@ -3140,6 +3145,7 @@ These surfaces are generated command references, not installed Hermes workflow s
   - Why: The request lacks the required inputs or would overclaim work that Hermes did not observe.
 - Quality bar:
   - Define validator criteria before gathering evidence.
+  - Run each cycle as evidence-gap closure: name the open gaps the cycle targets, then stop at the validator criteria or the declared iteration budget, whichever comes first.
   - Keep durable research artifacts separate from coding execution evidence.
   - Stop with next questions or a source-backed synthesis when validation is incomplete.
 - Completion checklist:
@@ -4141,7 +4147,7 @@ These surfaces are generated command references, not installed Hermes workflow s
   - The request is already handled by a narrower explicit skill with stronger evidence.
   - The user asks OMH to secretly run external platforms, connectors, schedulers, file exports, or runtime agents.
   - The only safe answer is to ask for missing authority, credentials, target, or observed evidence first.
-- Strong routing signals: `deliverable-package`, `deliverable mode`, `file attachment`, `attach file`, `attachment status`, `file delivery`, `file deliverable status`, `generated file`, `자료`, `첨부`, `첨부 상태`, `전달 상태`
+- Strong routing signals: `deliverable-package`, `deliverable mode`, `file attachment`, `attach file`, `attachment status`, `file delivery`, `file deliverable status`, `generated file`, `첨부`, `첨부 상태`, `전달 상태`
 - Good example:
   - Prompt: deliverable-package turn this research into PPT and PDF with attachment status.
   - Expected behavior: Produce `prepare_deliverable_package` with required context, wrapper actions, and not-evidence boundaries.
