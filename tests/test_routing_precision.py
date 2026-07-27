@@ -387,5 +387,59 @@ class RoutingPrecisionTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["missed_intervention_count"], 0)
 
 
+class TrivialMessageGuardTests(unittest.TestCase):
+    """A message with no routable content never reaches trigger scoring.
+
+    Observed live on Slack, mid document-harness conversation: the user sent
+    the bot a bare "?" and got an OMH catalog menu back, and "뭐" alone
+    DISPATCHED agent-ops-review at score 18. Multi-word Korean triggers
+    decompose into single-syllable scorer tokens, and the pre-existing
+    direct-answer guard applied only at candidate_score <= 4 -- so the noise
+    it exists to stop was exactly what disarmed it. The guard now runs before
+    any scoring.
+    """
+
+    TRIVIAL = ("?", "??", "@mikument-harness?", "뭐", "응?", "그래서?", "네", "ok", "왜?", "뭐지?")
+
+    def test_trivial_messages_fall_back_to_a_direct_answer(self) -> None:
+        from omh.routing.chat import DIRECT_ANSWER_REASON, route_chat_message
+
+        for message in self.TRIVIAL:
+            with self.subTest(message=message):
+                route = route_chat_message(message, source="slack")
+                self.assertEqual(route["action"], "fallback")
+                self.assertEqual(route["reason"], DIRECT_ANSWER_REASON)
+
+    def test_a_bare_syllable_never_dispatches_a_workflow(self) -> None:
+        # The exact live failure: one syllable, high-confidence dispatch.
+        from omh.routing.chat import route_chat_message
+
+        route = route_chat_message("뭐", source="slack")
+        self.assertNotEqual(route["action"], "dispatch")
+        self.assertNotEqual(route["selected_skill"], "agent-ops-review")
+
+    def test_named_skills_stay_routable_as_one_word_messages(self) -> None:
+        # `explicit_skill_invocation` knows every name and alias, and a named
+        # skill is the one legitimate one-word message.
+        from omh.routing.chat import DIRECT_ANSWER_REASON, route_chat_message
+
+        for message, expected in (("wiki", "wiki"), ("/wiki", "wiki"), ("ask", "ask"), ("team", "team")):
+            with self.subTest(message=message):
+                route = route_chat_message(message, source="slack")
+                self.assertEqual(route["action"], "dispatch")
+                self.assertEqual(route["selected_skill"], expected)
+                self.assertNotEqual(route["reason"], DIRECT_ANSWER_REASON)
+
+    def test_short_imperatives_and_real_requests_keep_routing(self) -> None:
+        # An imperative does not end in a question mark; a spaced request has
+        # content. Neither belongs to this guard.
+        from omh.routing.chat import DIRECT_ANSWER_REASON, route_chat_message
+
+        for message in ("리뷰해", "배포해줘", "상태 보여줘", "왜 빌드가 깨졌어", "이거 기억해둬", "omh doctor"):
+            with self.subTest(message=message):
+                route = route_chat_message(message, source="slack")
+                self.assertNotEqual(route["reason"], DIRECT_ANSWER_REASON)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1428,6 +1428,13 @@ def _route_chat_message_cached(
     min_confidence: str,
 ) -> dict[str, object]:
     routing_message = _with_canonical_display_names(scrub_diagnostic_status_text(message))
+    trivial_decision = _trivial_message_fast_path_decision(
+        routing_message,
+        source=source,
+        min_confidence=min_confidence,
+    )
+    if trivial_decision is not None:
+        return trivial_decision.to_dict()
     fast_omh_help_decision = _omh_help_fast_path_decision(
         message,
         routing_message=routing_message,
@@ -4901,6 +4908,64 @@ def _fast_path_compact(value: str) -> str:
     return re.sub(r"[\s\?\!\.,;:~…？]+", "", value)
 
 
+def _trivial_message_fast_path_decision(
+    routing_message: str,
+    *,
+    source: str,
+    min_confidence: str,
+) -> ChatRouteDecision | None:
+    """A message with no routable content can never carry workflow intent.
+
+    Observed live on Slack, mid document-harness conversation: a bare "?" got
+    an OMH catalog menu, because nothing guarded messages whose entire content
+    is punctuation. Worse, "뭐" alone DISPATCHED agent-ops-review at score 18
+    -- multi-word Korean triggers decompose into single-syllable scorer tokens,
+    and the existing direct-answer guard applies only at candidate_score <= 4,
+    so the very noise it exists to stop is what disarmed it. This guard runs
+    before any scoring, because no score derived from one syllable or a
+    question mark is evidence of anything.
+
+    A named skill is exempt: "wiki" or "/ask" is a routable one-word message,
+    and `explicit_skill_invocation` already knows every name and alias.
+    """
+    text = routing_message.strip()
+    if not text:
+        return None
+    if explicit_skill_invocation(text) is not None:
+        return None
+    # A leading @mention is addressing, not content: on Slack the observed bug
+    # message was literally "@mikument-harness?".
+    core = _MENTION_PREFIX.sub("", text).strip()
+    if len(core) > 12:
+        return None
+    # A message that IS a curated trigger, whole, is deliberate shorthand --
+    # "뭔일임?" is agent-ops slang someone chose to put in the catalog. Only
+    # sub-trigger fragments are noise; the whole trigger is the signal.
+    if normalized_phrase(core.rstrip("?？!！.。")) in _whole_trigger_phrases():
+        return None
+    content = [character for character in core if character.isalnum()]
+    if len(content) <= 2:
+        return _direct_answer_decision(text, source=source, min_confidence=min_confidence)
+    # "그래서?" -- a single questioning token is a conversational beat, not a
+    # workflow request. Imperatives ("리뷰해") do not end in a question mark and
+    # keep routing.
+    if " " not in core and core.endswith(("?", "？")) and len(content) <= 4:
+        return _direct_answer_decision(text, source=source, min_confidence=min_confidence)
+    return None
+
+
+@lru_cache(maxsize=1)
+def _whole_trigger_phrases() -> frozenset[str]:
+    return frozenset(
+        normalized_phrase(trigger)
+        for definition in routable_definitions()
+        for trigger in definition.triggers
+    )
+
+
+_MENTION_PREFIX = re.compile(r"^(?:@\S+\s*)+")
+
+
 def _direct_answer_fast_path_decision(
     message: str,
     *,
@@ -4912,6 +4977,15 @@ def _direct_answer_fast_path_decision(
         return None
     if not _is_fast_plain_direct_answer_question(routing_message):
         return None
+    return _direct_answer_decision(message, source=source, min_confidence=min_confidence)
+
+
+def _direct_answer_decision(
+    message: str,
+    *,
+    source: str,
+    min_confidence: str,
+) -> ChatRouteDecision:
     selected_harness = primary_harness_for_skill(_ROUTER_SKILL)
     reason = DIRECT_ANSWER_REASON
     return ChatRouteDecision(
