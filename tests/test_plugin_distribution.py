@@ -894,5 +894,76 @@ print(json.dumps(observed, ensure_ascii=False))
             self.assertNotIn("do not leak this mid-session prompt", mid_session_role_context["context"])
 
 
+class UpdateRefreshesTheBundleTests(unittest.TestCase):
+    """`omh update` used to leave the installed bundle at its old version.
+
+    `install_plugin_bundle` was reachable only from `cmd_setup`, so an operator
+    who ran `omh update` got new workflows against old plugin code -- the tools,
+    hooks, and now the memory provider under `$HERMES_HOME/plugins/omh/` stayed
+    where the last `omh setup` left them. AGENTS.md tells ordinary users they
+    need setup, update, and doctor; update was the one not doing its name.
+    """
+
+    def _bundle_dir(self, hermes_home: Path) -> Path:
+        return hermes_home / "plugins" / "omh"
+
+    def test_update_reinstalls_the_bundle_tree(self) -> None:
+        # The bundle is replaced wholesale by an atomic rename of a freshly
+        # copied tree, so a file the source does not contain cannot survive a
+        # real reinstall. That makes a stray file the honest observable: editing
+        # a managed file instead would trip the drift guard, which is a
+        # different behaviour and correctly refuses.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            status, _, stderr = run_cli(base + ["setup"])
+            self.assertEqual(status, 0, stderr)
+
+            stray = self._bundle_dir(root / ".hermes") / "stray_from_an_older_version.py"
+            stray.write_text("# left behind by an older bundle\n", encoding="utf-8")
+
+            status, _, stderr = run_cli(base + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertFalse(stray.exists())
+            self.assertTrue((self._bundle_dir(root / ".hermes") / "memory_provider.py").is_file())
+
+    def test_update_does_not_install_a_bundle_setup_never_installed(self) -> None:
+        # Installing it here would write plugin files without the Hermes
+        # enablement setup also does, and half that pair is worse than neither.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            status, _, stderr = run_cli(base + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertFalse(self._bundle_dir(root / ".hermes").exists())
+
+    def test_a_dry_run_update_leaves_the_installed_bundle_alone(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            run_cli(base + ["setup"])
+            stray = self._bundle_dir(root / ".hermes") / "stray_from_an_older_version.py"
+            stray.write_text("# left behind by an older bundle\n", encoding="utf-8")
+
+            status, _, stderr = run_cli(base + ["update", "--dry-run"])
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue(stray.exists())
+
+    def test_a_drifted_bundle_does_not_fail_the_update(self) -> None:
+        # A managed file edited outside OMH makes the reinstall refuse. Update
+        # must still succeed for everything else; `omh doctor` reports the drift
+        # with the `omh setup --force` instruction that repairs it.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            run_cli(base + ["setup"])
+            marker = self._bundle_dir(root / ".hermes") / "__init__.py"
+            marker.write_text("# edited outside OMH\n", encoding="utf-8")
+
+            status, _, stderr = run_cli(base + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "# edited outside OMH\n")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -187,7 +187,37 @@ def cmd_update(args: argparse.Namespace) -> int:
     self_update = _command_package_self_update_plan(args)
     if self_update.get("should_update"):
         return _run_command_package_self_update(args, self_update)
-    return cmd_install(args)
+    code = cmd_install(args)
+    if code == 0:
+        _refresh_installed_plugin_bundle(args)
+    return code
+
+
+def _refresh_installed_plugin_bundle(args: argparse.Namespace) -> dict[str, object] | None:
+    """Bring an already-installed plugin bundle up to the running version.
+
+    `omh update` used to refresh skills and stop there: `install_plugin_bundle`
+    was reachable only from `cmd_setup`, so the tools, hooks, and memory
+    provider under `$HERMES_HOME/plugins/omh/` stayed at whatever version last
+    ran setup. The three commands AGENTS.md tells ordinary users to know are
+    setup, update, and doctor -- and update was the one that did not update.
+
+    Only refreshes what is already there. Installing the bundle for the first
+    time is setup's job, because that is also where Hermes registration and
+    enablement happen, and half of that pair is worse than neither.
+    """
+    paths = _paths(args)
+    if not paths.hermes_plugin_dir.is_dir():
+        return None
+    try:
+        result = install_plugin_bundle(paths, force=args.force, dry_run=args.dry_run)
+    except PluginPackError:
+        # An update must not fail over a bundle a later `omh setup --force` can
+        # repair; `omh doctor` reports the drift with the instruction to run it.
+        return None
+    if not args.dry_run:
+        update_state(paths, {"last_plugin_distribution": result})
+    return result
 
 
 def _command_package_self_update_plan(args: argparse.Namespace) -> dict[str, object]:
