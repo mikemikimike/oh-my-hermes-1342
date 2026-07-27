@@ -355,7 +355,9 @@ def build_coding_delegation_payload(
     )
     if isolation_plan:
         payload["isolation_plan"] = isolation_plan
-    if _inline_coding_policy_applies(delegation.intent, delegation.action, selection.choice_required):
+    if _inline_coding_policy_applies(
+        message.lower(), delegation.intent, delegation.action, selection.choice_required
+    ):
         payload["delegation_policy"] = inline_coding_policy_payload()
     if selection.selected_executor_profile == "codex" and delegation.action == "delegate":
         payload["executor_handoff"] = _executor_handoff(executor_target, delegation, isolation_plan=isolation_plan)
@@ -596,14 +598,31 @@ def inline_coding_policy_payload() -> dict[str, object]:
     }
 
 
-def _inline_coding_policy_applies(intent: str, action: str, choice_required: bool) -> bool:
+# Cues that mark a message as coding-shaped for the prohibition even when
+# scoring produced no intent (score 0 → "unknown" → fallback is exactly the
+# path a bare "코딩 해줘" takes). Extends the catalog's coding terms with the
+# bare activity words the catalog reserves for stronger signals; matched with
+# the same substring rule `_intent_for` already uses for these terms.
+_INLINE_CODING_POLICY_EXTRA_TERMS = ("coding", "코딩", "패치", "patch ", " 짜줘", "코드 좀")
+
+
+def _message_is_coding_shaped(lowered_message: str, intent: str) -> bool:
+    if intent in {"coding", "review"}:
+        return True
+    if _has_any(lowered_message, coding_terms_for_intent("coding")):
+        return True
+    return _has_any(lowered_message, _INLINE_CODING_POLICY_EXTRA_TERMS)
+
+
+def _inline_coding_policy_applies(lowered_message: str, intent: str, action: str, choice_required: bool) -> bool:
     # The prohibition is product-wide; the block rides every payload where a
     # wrapper could otherwise read "Hermes keeps it" into coding-shaped work:
-    # clarify/fallback outcomes and unresolved-owner delegations, including
-    # retained workflows. Wrappers read it from the payload; retained-workflow
-    # chat cards keep their contractually executor-free copy and never render
-    # it into user-facing text.
-    if intent not in {"coding", "review"}:
+    # clarify/fallback outcomes (including score-0 fallbacks like a bare
+    # "코딩 해줘") and unresolved-owner delegations, including retained
+    # workflows. Wrappers read it from the payload; retained-workflow chat
+    # cards keep their contractually executor-free copy and never render it
+    # into user-facing text.
+    if not _message_is_coding_shaped(lowered_message, intent):
         return False
     return action != "delegate" or choice_required
 

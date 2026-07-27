@@ -21,15 +21,19 @@ goal to Hermes in chat; these commands are the backend surface.
    history, so repeated checks cost the same context instead of growing with
    the run. `--limit N` changes the tail; `--full` reads everything and is
    expensive for agent context.
-   For user-facing briefings, `omh coding fanout brief <id>` emits one
-   `fanout_briefing/v1` row per unit (owner, routed model, session ref,
-   status, elapsed seconds, token count, last observed summary) joined from
-   the contract, the persisted dispatch summary, and a one-event journal
-   tail; unknown fields stay the literal string `unknown` rather than being
-   inferred. Without an id it lists known fanouts. Session refs and token
-   counts are `unknown` until a structured-output dispatch contract lands
-   (deliberate deferral — the current templates keep executor stdout as
-   opaque bounded text).
+   For user-facing briefings, `omh coding fanout brief <id>` renders one
+   line per unit in merge-plan order — unit, owner, `(model effort)` label
+   (for example `(gpt-5-codex xhigh)`), status, elapsed seconds, token
+   count, session ref, last observed summary — as plain text by default
+   with `--json` for the `fanout_briefing/v1` payload. It joins the
+   contract, the persisted dispatch summary, and a one-event journal tail;
+   unknown fields stay the literal `unknown` rather than being inferred,
+   and never-dispatched units keep `prepared_not_observed`. Without an id
+   it lists known fanouts. Session refs and token counts are `unknown`
+   until a structured-output dispatch contract lands (deliberate deferral
+   — the current templates keep executor stdout as opaque bounded text);
+   executor-progress bindings for `omh runtime progress-status` are
+   deferred with that same follow-up.
 5. **Merge (human/agent-gated)** — dispatch never merges. The summary lists
    merge-ready units in the contract's `merge_order`; merging and the final
    integration gate remain the operator's or reviewing agent's job.
@@ -87,13 +91,17 @@ goal to Hermes in chat; these commands are the backend surface.
   and `duration_seconds`, and the full dispatch summary persists to
   `~/.omh/coding/fanout/<id>/dispatch_summary.json` (latest wins,
   metadata only, skipped on `--dry-run`).
-- **Limit signals.** A failed spawn whose bounded output matches a fixed
-  limit-shape pattern (rate limit, usage limit, quota, 429, credits) is
-  flagged `limit_shaped` with a pattern label; the last such failure per
-  executor persists to `~/.omh/runtime/executor-limit-signals.json` and
-  surfaces as an advisory in `omh coding executor-readiness` and the
-  choose-executor context. Only the boolean and label persist — never the
-  matched text, and stderr is matched in memory only.
+- **Limit signals.** A failed spawn whose bounded output matches a fixed,
+  context-anchored limit-shape pattern (rate limit, usage limit, quota
+  exceeded, HTTP 429, credits) is flagged `limit_shaped` with a pattern
+  label; the last such failure per executor persists to
+  `~/.omh/runtime/executor-limit-signals.json` (plus its transient `.lock`
+  sibling) and surfaces as an advisory — with read-time `age_seconds` and
+  a 6-hour `stale` marker — in `omh coding executor-readiness` and the
+  choose-executor context, where candidates rank logged-in/no-fresh-limit
+  first without ever removing an option. A later successful dispatch to
+  the same executor clears its signal. Only the boolean and label persist
+  — never the matched text, and stderr is matched in memory only.
 - **Resume.** Re-running dispatch skips units whose runs already carry an
   observed successful result. `--unit <id>` selects subsets.
 - **Never**: auto-merge, default-on execution, network calls by omh itself,
@@ -107,11 +115,11 @@ goal to Hermes in chat; these commands are the backend surface.
 omh coding fanout prepare --goal <words...> --units units.json [--record] [--source discord]
 omh coding fanout validate --units units.json
 omh coding fanout show <fanout-id> [--limit 20] [--full]
-omh coding fanout brief [<fanout-id>]
+omh coding fanout brief [<fanout-id>] [--json]
 omh coding fanout dispatch <fanout-id> --goal-file goal.txt \
   [--repo-root .] [--base-ref HEAD] [--concurrency 2] [--timeout 1800] \
   [--unit <id> ...] [--dry-run]
-omh coding model-route --executor <profile> [--role <role>] [--model <id>] [--effort <level>]
+omh coding model-route --executor <profile> [--role <role>] [--model <id>] [--effort <level>] [--json]
 ```
 
 `--units` and `--goal-file` accept `-` for stdin. `--dry-run` resolves

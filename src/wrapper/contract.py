@@ -3582,6 +3582,7 @@ def _build_chat_interaction_payload_uncached(
         delegation["executor_resolution"] = executor_resolution
         coding_route_decision = _coding_route_decision_for_delegation(message, executor_resolution)
         delegation["coding_route_decision"] = coding_route_decision
+        _attach_executor_choice_context(delegation, paths)
         base["delegation"] = delegation
         base["executor_resolution"] = executor_resolution
         base["coding_route_decision"] = coding_route_decision
@@ -3754,6 +3755,7 @@ def _attach_coding_owner_handoff(
     }
     coding_route_decision = _coding_route_decision_for_delegation(message, executor_resolution)
     delegation["coding_route_decision"] = coding_route_decision
+    _attach_executor_choice_context(delegation, paths)
     agentic_playbook = delegation.get("agentic_playbook")
     if isinstance(agentic_playbook, dict):
         base["agentic_playbook"] = agentic_playbook
@@ -3763,6 +3765,22 @@ def _attach_coding_owner_handoff(
     base["next_action"] = _delegation_next_action(delegation)
     base["chat_response"] = build_chat_response_from_delegation(delegation, thread_key=str(base["thread_key"]))
     return base
+
+
+def _attach_executor_choice_context(delegation: dict[str, object], paths: OmhPaths | None) -> None:
+    """Attach cached per-candidate readiness/auth/limit context where a choice is live.
+
+    Only cached readiness state and cheap local markers are read — no
+    subprocess runs — so the chat lane stays as deterministic as the CLI lane
+    that already attaches the same block.
+    """
+    if paths is None:
+        return
+    if not (delegation.get("delegation_policy") or _nested(delegation, "executor_selection").get("choice_required")):
+        return
+    from ..coding.executor_readiness import executor_choice_context
+
+    delegation["executor_choice_context"] = executor_choice_context(paths)
 
 
 def _coding_route_decision_for_delegation(
@@ -4790,6 +4808,13 @@ def build_chat_response_from_route(
                     "blockers": status_card.get("blockers", []),
                     "throughput_levers": card.get("throughput_levers", []),
                     "evidence_not_observed": card.get("not_evidence_until_observed", []),
+                    # The card itself is projection-only; these are the live
+                    # observed-evidence surfaces a briefing should be read
+                    # from before narrating in-flight subagent work.
+                    "live_status_sources": [
+                        "omh coding fanout brief",
+                        "omh runtime progress-status",
+                    ],
                 },
             )
         if selected == "workflow-learning":
@@ -5453,10 +5478,25 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
             },
         )
     if action == "delegate" and _nested(delegation_payload, "executor_selection").get("choice_required"):
+        policy_state = _delegation_policy_state(delegation_payload)
+        body = (
+            "Keep this in Hermes, hand it to Claude Code, hand it to Codex or an oh-my runtime path, "
+            "or split it across several agents in parallel before this becomes a prepared coding handoff."
+        )
+        if policy_state:
+            # Coding-shaped work never opens with "keep this in Hermes": the
+            # choice is which coding agent owns it, not whether to delegate.
+            # Hermes is still named first — as orchestrator, not owner — so the
+            # card stays executor-neutral with no vendor presented as default.
+            body = (
+                "Hermes keeps orchestration and status only — choose the coding agent that owns this "
+                "work: Claude Code, Codex, an oh-my runtime path, or split it across several agents "
+                "in parallel. Main coding stays delegated."
+            )
         return _chat_response(
             kind="handoff",
             headline="Choose the coding agent.",
-            body="Keep this in Hermes, hand it to Claude Code, hand it to Codex or an oh-my runtime path, or split it across several agents in parallel before this becomes a prepared coding handoff.",
+            body=body,
             phase="executor_choice_required",
             next_action="choose_executor",
             thread_key=thread_key,
@@ -5477,8 +5517,9 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
                 "executor_options": _nested(delegation_payload, "executor_selection").get("options", []),
                 "prepared_handoff_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
                 "executor_readiness": delegation_payload.get("executor_readiness", {}),
+                "executor_choice_context": delegation_payload.get("executor_choice_context", {}),
                 "executor_resolution": executor_resolution,
-                **_delegation_policy_state(delegation_payload),
+                **policy_state,
             },
         )
     if action == "clarify":
@@ -5524,7 +5565,11 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
         thread_key=thread_key,
         actions=[_action("answer:clarify", "Answer clarification", "primary"), _action("cancel", "Cancel", "secondary")],
         claim_boundary="No executor handoff is dispatchable.",
-        extra_state={"delegation_action": action, "intent": delegation.get("intent", "unknown")},
+        extra_state={
+            "delegation_action": action,
+            "intent": delegation.get("intent", "unknown"),
+            **_delegation_policy_state(delegation_payload),
+        },
     )
 
 

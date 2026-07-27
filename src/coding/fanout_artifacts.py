@@ -25,6 +25,11 @@ def write_fanout_contract(paths: OmhPaths, contract: dict[str, object]) -> dict[
     return payload
 
 
+def fanout_dispatch_summary_path(paths: OmhPaths, fanout_id: str) -> Path:
+    """Validated dispatch-summary path for one fanout (id pattern + containment)."""
+    return _managed_fanout_dir(paths, _validated_fanout_id(fanout_id)) / "dispatch_summary.json"
+
+
 def read_fanout_contract(paths: OmhPaths, fanout_id: str) -> dict[str, object]:
     import json
 

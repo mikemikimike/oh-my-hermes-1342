@@ -19,14 +19,19 @@ from omh.wrapper.contract import build_chat_response_from_delegation  # noqa: E4
 _RETAINED = set(retained_delegation_skill_names())
 
 # Coding-shaped requests that historically could fall into clarify/fallback
-# (low score, no file reference, retained top workflow) — the exact paths where
-# "Hermes keeps it" must never read as "Hermes codes it".
+# (low score, no file reference, retained top workflow, score-0 fallbacks) —
+# the exact paths where "Hermes keeps it" must never read as "Hermes codes it".
 _CODING_SHAPED_MESSAGES = (
     "fix the bug",
     "implement the new login feature in src/auth/login.py with tests",
     "refactor this code",
     "리팩토링 해줘",
     "write code for the parser and fix the failing tests",
+    "코딩 해줘",
+    "깡으로 코딩해줘",
+    "패치 좀",
+    "write it",
+    "너가 직접 구현해",
 )
 
 _NON_CODING_MESSAGES = (
@@ -37,25 +42,36 @@ _NON_CODING_MESSAGES = (
 
 class InlineCodingProhibitionTests(unittest.TestCase):
     def test_coding_shaped_messages_never_present_hermes_as_coding_owner(self) -> None:
-        exercised_policy = False
+        # The invariant, asserted from the spec side rather than from the
+        # implementation's own gate: whenever a coding-shaped message resolves
+        # to retained_hermes (or an unresolved-owner delegate), the payload
+        # MUST carry the prohibition — including score-0 fallbacks like a bare
+        # "코딩 해줘", the exact shape the user banned.
         for message in _CODING_SHAPED_MESSAGES:
             with self.subTest(message=message):
                 payload = build_coding_delegation_payload(message)
                 delegation = payload["delegation"]
-                intent = str(delegation["intent"])
                 action = str(delegation["action"])
-                if intent not in {"coding", "review"}:
-                    continue
-                if action != "delegate" or payload["executor_selection"]["choice_required"]:
+                if payload["work_owner_mode"] == "retained_hermes" or (
+                    action == "delegate" and payload["executor_selection"]["choice_required"]
+                ):
                     policy = payload.get("delegation_policy")
                     self.assertIsInstance(policy, dict, f"{message!r} lacks the delegation policy block")
                     self.assertTrue(policy["inline_coding_prohibited"])
                     self.assertEqual(policy["schema_version"], DELEGATION_POLICY_SCHEMA_VERSION)
                     self.assertIn("never implements main coding work inline", policy["policy"])
-                    exercised_policy = True
                 if action == "delegate" and not payload["executor_selection"]["choice_required"]:
                     self.assertNotEqual(payload["work_owner_mode"], "retained_hermes")
-        self.assertTrue(exercised_policy, "no coding-shaped message exercised the policy block")
+
+    def test_score_zero_fallback_carries_policy_and_fallback_card_state(self) -> None:
+        payload = build_coding_delegation_payload("깡으로 코딩해줘")
+        delegation = payload["delegation"]
+        self.assertEqual(str(delegation["action"]), "fallback")
+        self.assertEqual(payload["work_owner_mode"], "retained_hermes")
+        self.assertIn("delegation_policy", payload)
+        response = build_chat_response_from_delegation(payload)
+        self.assertIn("delegation_policy", response["state"])
+        self.assertTrue(response["state"]["delegation_policy"]["inline_coding_prohibited"])
 
     def test_non_coding_messages_do_not_carry_the_policy_block(self) -> None:
         for message in _NON_CODING_MESSAGES:
@@ -112,7 +128,7 @@ class PolicyCardStateTests(unittest.TestCase):
         self.assertIn("delegation_policy", response["state"])
         self.assertTrue(response["state"]["delegation_policy"]["inline_coding_prohibited"])
 
-    def test_choice_required_delegate_carries_the_policy_block(self) -> None:
+    def test_choice_required_delegate_carries_policy_context_and_delegation_first_copy(self) -> None:
         payload = build_coding_delegation_payload(
             "implement pagination in src/api/list.py and run the tests",
             executor_target="choose",
@@ -121,9 +137,21 @@ class PolicyCardStateTests(unittest.TestCase):
         self.assertEqual(str(delegation["action"]), "delegate")
         self.assertTrue(payload["executor_selection"]["choice_required"])
         self.assertIn("delegation_policy", payload)
+        # The wrapper lane attaches this from cached readiness state; the card
+        # must pass it through untouched.
+        payload["executor_choice_context"] = {
+            "candidates": [{"profile": "codex", "readiness_status": "ready"}],
+            "claim_boundary": "test",
+        }
         response = build_chat_response_from_delegation(payload)
-        self.assertIn("delegation_policy", response["state"])
-        self.assertTrue(response["state"]["delegation_policy"]["inline_coding_prohibited"])
+        state = response["state"]
+        self.assertIn("delegation_policy", state)
+        self.assertTrue(state["delegation_policy"]["inline_coding_prohibited"])
+        self.assertEqual(state["executor_choice_context"]["candidates"][0]["profile"], "codex")
+        # Coding-shaped choice cards never lead with keeping the work in
+        # Hermes; delegation is the premise, the choice is only who owns it.
+        self.assertNotIn("Keep this in Hermes", str(response["body"]))
+        self.assertIn("stays delegated", str(response["body"]))
 
 
 if __name__ == "__main__":

@@ -47,12 +47,29 @@ class ModelRouteResolverTests(unittest.TestCase):
         self.assertEqual(route["source"], "role_catalog_default")
         self.assertEqual(route["selected_model"], "sonnet")
 
-    def test_role_with_many_candidates_requires_choice(self) -> None:
-        route = resolve_model_route("codex", role="implementation")
-        # codex catalog maps implementation+docs to gpt-5 only; brain has one too.
-        self.assertIn(route["status"], {"routed", "choice_required"})
-        if route["status"] == "choice_required":
-            self.assertTrue(route["candidates"])
+    def test_review_role_on_codex_requires_an_explicit_choice(self) -> None:
+        # `review` is recommended on both codex options by design, so the role
+        # resolves to a choice instead of a silent default.
+        route = resolve_model_route("codex", role="review")
+        self.assertEqual(route["status"], "choice_required")
+        self.assertEqual(route["source"], "role_catalog_candidates")
+        self.assertEqual(len(route["candidates"]), 2)
+        self.assertEqual(route["selected_model"], "")
+
+    def test_unknown_role_is_named_in_reasons_not_erased(self) -> None:
+        route = resolve_model_route("codex", role="tester")
+        self.assertEqual(route["status"], "model_unrouted")
+        self.assertTrue(any("tester" in reason for reason in route["reasons"]))
+        self.assertFalse(any("No model or role was requested" in reason for reason in route["reasons"]))
+
+    def test_effort_survives_profiles_without_catalog(self) -> None:
+        route = resolve_model_route("gemini-runtime", requested_effort="high")
+        self.assertEqual(route["status"], "no_model_catalog")
+        self.assertEqual(route["selected_reasoning_effort"], "high")
+
+    def test_unsafe_effort_shape_falls_back_to_cli_default(self) -> None:
+        route = resolve_model_route("codex", requested_model="gpt-5", requested_effort='high\nsandbox_mode = "danger"')
+        self.assertEqual(route["selected_reasoning_effort"], "")
 
     def test_brain_role_gets_high_effort_default(self) -> None:
         route = resolve_model_route("codex", role="brain")

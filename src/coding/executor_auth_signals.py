@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Final
@@ -43,7 +44,12 @@ def executor_auth_signals(home: Path | None = None) -> dict[str, object]:
 
 
 def auth_signal_for_profile(profile: str, home: Path | None = None) -> dict[str, object]:
-    """Return the auth-signal entry for one profile; non-CLI profiles are not_applicable."""
+    """Return the auth-signal entry for one profile; non-CLI profiles are not_applicable.
+
+    Probes only the requested profile's marker file — readiness calls this once
+    per dispatch unit, so probing both files here would multiply reads of the
+    potentially large `~/.claude.json` for no signal gain.
+    """
     normalized = str(profile or "").strip().casefold()
     if normalized not in AUTH_SIGNAL_PROFILES:
         return {
@@ -52,15 +58,26 @@ def auth_signal_for_profile(profile: str, home: Path | None = None) -> dict[str,
             "observed_at": utc_now(),
             "claim_boundary": EXECUTOR_AUTH_SIGNALS_CLAIM_BOUNDARY,
         }
-    signals = executor_auth_signals(home)
-    profiles = signals.get("profiles")
-    entry = dict(profiles[normalized]) if isinstance(profiles, dict) and normalized in profiles else {}
+    base = home if home is not None else Path.home()
+    if normalized == "codex":
+        entry = _marker_payload(_codex_marker(base), marker_kind="local_auth_file")
+    else:
+        entry = _marker_payload(_claude_marker(base), marker_kind="local_config_login_key")
     entry["claim_boundary"] = EXECUTOR_AUTH_SIGNALS_CLAIM_BOUNDARY
     return entry
 
 
+# Past this horizon a limit signal is advisory history, not current state: the
+# provider windows that produce limit-shaped failures reset within hours.
+LIMIT_SIGNAL_STALE_AFTER_SECONDS: Final[int] = 6 * 60 * 60
+
+
 def last_limit_signal_for_profile(paths: OmhPaths, profile: str) -> dict[str, object]:
-    """Return the last observed limit-shaped dispatch failure for one profile, if any."""
+    """Return the last observed limit-shaped dispatch failure for one profile, if any.
+
+    The entry gains `age_seconds` and `stale` computed at read time so a
+    consumer can never mistake an old observation for current provider state.
+    """
     state, error = read_json_object_result(paths.executor_limit_signals_path)
     if error or not isinstance(state, dict):
         return {}
@@ -70,7 +87,22 @@ def last_limit_signal_for_profile(paths: OmhPaths, profile: str) -> dict[str, ob
     entry = profiles.get(str(profile or "").strip().casefold())
     if not isinstance(entry, dict):
         return {}
-    return {str(key): value for key, value in entry.items()}
+    payload = {str(key): value for key, value in entry.items()}
+    age = _age_seconds(str(payload.get("last_limit_shaped_at", "") or ""))
+    if age is not None:
+        payload["age_seconds"] = age
+        payload["stale"] = age > LIMIT_SIGNAL_STALE_AFTER_SECONDS
+    return payload
+
+
+def _age_seconds(observed_at: str) -> int | None:
+    if not observed_at:
+        return None
+    try:
+        observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return max(0, int((datetime.now(timezone.utc) - observed).total_seconds()))
 
 
 def _claude_marker(home: Path) -> str:

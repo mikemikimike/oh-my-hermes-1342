@@ -55,7 +55,10 @@ EXECUTOR_MODEL_OPTIONS: Final[dict[str, tuple[dict[str, object], ...]]] = {
             "model_id": "gpt-5",
             "label": "General frontier model",
             "tier": "standard",
-            "recommended_roles": ("implementation", "docs"),
+            # `review` appears on both codex options on purpose: a review unit
+            # can be run frontier or standard, so the role resolves to an
+            # explicit choice rather than a silent default.
+            "recommended_roles": ("implementation", "docs", "review"),
             "reasoning_efforts": ("low", "medium", "high", "xhigh"),
         },
     ),
@@ -65,21 +68,21 @@ EXECUTOR_MODEL_OPTIONS: Final[dict[str, tuple[dict[str, object], ...]]] = {
             "label": "Claude frontier tier alias",
             "tier": "frontier",
             "recommended_roles": ("brain", "review", "design_visual"),
-            "reasoning_efforts": ("low", "medium", "high"),
+            "reasoning_efforts": ("low", "medium", "high", "xhigh", "max"),
         },
         {
             "model_id": "sonnet",
             "label": "Claude standard tier alias",
             "tier": "standard",
             "recommended_roles": ("implementation",),
-            "reasoning_efforts": ("low", "medium", "high"),
+            "reasoning_efforts": ("low", "medium", "high", "xhigh", "max"),
         },
         {
             "model_id": "haiku",
             "label": "Claude fast tier alias",
             "tier": "fast",
             "recommended_roles": ("docs",),
-            "reasoning_efforts": ("low", "medium", "high"),
+            "reasoning_efforts": ("low", "medium", "high", "xhigh", "max"),
         },
     ),
 }
@@ -137,7 +140,16 @@ def resolve_model_route(
     executor CLI default in place as a named outcome rather than a guess.
     """
     profile = str(executor_profile or "").strip().casefold()
-    normalized_role = _normalized_role(role)
+    raw_role = str(role or "").strip()
+    normalized_role = _normalized_role(raw_role)
+    role_reasons: list[str] = []
+    if raw_role and not normalized_role:
+        # A declared role that fails to normalize must be named, not erased:
+        # this reason lands in frozen contracts, so "no role was requested"
+        # would be a false statement about the request.
+        role_reasons.append(
+            f"Role {raw_role!r} is not a known role ({', '.join(MODEL_ROLES)}); it was ignored."
+        )
     model = str(requested_model or "").strip()
     effort = str(requested_effort or "").strip().casefold()
     options = EXECUTOR_MODEL_OPTIONS.get(profile, ())
@@ -149,8 +161,10 @@ def resolve_model_route(
             status="no_model_catalog",
             source="no_catalog",
             role=normalized_role,
+            selected_reasoning_effort=_selected_effort(profile, effort, normalized_role, ""),
             candidates=[],
-            reasons=[
+            reasons=role_reasons
+            + [
                 f"No built-in model catalog exists for `{profile or 'unknown'}`; the executor CLI default applies.",
             ],
         )
@@ -164,7 +178,7 @@ def resolve_model_route(
             selected_model=model,
             selected_reasoning_effort=_selected_effort(profile, effort, normalized_role, model),
             candidates=candidates,
-            reasons=[f"The request names `{model}` directly, so the catalog is advisory only."],
+            reasons=role_reasons + [f"The request names `{model}` directly, so the catalog is advisory only."],
         )
 
     if normalized_role:
@@ -179,22 +193,36 @@ def resolve_model_route(
                 selected_model=selected,
                 selected_reasoning_effort=_selected_effort(profile, effort, normalized_role, selected),
                 candidates=candidates,
-                reasons=[
+                reasons=role_reasons
+                + [
                     f"Role `{normalized_role}` has exactly one built-in candidate for `{profile}`.",
                 ],
+            )
+        if matched:
+            reason = (
+                f"Role `{normalized_role}` matches {len(matched)} candidates for `{profile}`; "
+                "the caller picks one or names a model."
+            )
+        else:
+            reason = (
+                f"Role `{normalized_role}` matches no built-in candidate for `{profile}`; "
+                f"pick one of the {len(candidates)} catalog options or name a model."
             )
         return _route_payload(
             profile,
             status="choice_required",
             source="role_catalog_candidates",
             role=normalized_role,
+            selected_reasoning_effort=_selected_effort(profile, effort, normalized_role, ""),
             candidates=matched or candidates,
-            reasons=[
-                f"Role `{normalized_role}` matches {len(matched) or len(candidates)} candidates for `{profile}`; "
-                "the caller picks one or names a model.",
-            ],
+            reasons=role_reasons + [reason],
         )
 
+    unrouted_reason = (
+        "No model or role was requested, so the executor CLI default model applies."
+        if not raw_role
+        else "No usable model or role remained, so the executor CLI default model applies."
+    )
     return _route_payload(
         profile,
         status="model_unrouted",
@@ -202,7 +230,7 @@ def resolve_model_route(
         role=normalized_role,
         selected_reasoning_effort=_selected_effort(profile, effort, normalized_role, ""),
         candidates=candidates,
-        reasons=["No model or role was requested, so the executor CLI default model applies."],
+        reasons=role_reasons + [unrouted_reason],
     )
 
 
@@ -240,11 +268,23 @@ def _supported_efforts(profile: str, model_id: str) -> tuple[str, ...]:
     return tuple(union)
 
 
+# Efforts are a closed vocabulary shape, unlike model ids: an effort value is
+# embedded into a codex `--config key=value` composite, so free text here would
+# lean on the third-party TOML parser for containment. Off-catalog efforts are
+# accepted only in this shape; anything else falls back to the CLI default.
+_EFFORT_SHAPE_CHARSET: Final[frozenset[str]] = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
+
+
 def _selected_effort(profile: str, requested_effort: str, role: str, model_id: str) -> str:
     if requested_effort:
-        # Requested efforts pass through even off-catalog; the executor CLI is
-        # the authority on what it accepts, same rule as requested models.
-        return requested_effort
+        supported = _supported_efforts(profile, model_id)
+        if requested_effort in supported:
+            return requested_effort
+        if set(requested_effort) <= _EFFORT_SHAPE_CHARSET:
+            # Unknown-but-effort-shaped values still pass through so a newer
+            # CLI vocabulary is not blocked by a stale catalog.
+            return requested_effort
+        return ""
     if role in _HIGH_EFFORT_ROLES and _HIGH_EFFORT_DEFAULT in _supported_efforts(profile, model_id):
         return _HIGH_EFFORT_DEFAULT
     return ""

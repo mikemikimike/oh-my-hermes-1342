@@ -674,7 +674,7 @@ Runtime artifacts are local JSON/JSONL files under `.omh/runtime/`.
         events.jsonl
 ```
 
-`executor-limit-signals.json` keeps, per executor profile, the last observed
+`executor-limit-signals.json` (written under a transient `.lock` sibling) keeps, per executor profile, the last observed
 limit-shaped dispatch failure (timestamp, run ref, pattern label only — never
 matched text). It is advisory ranking metadata for executor choice, not
 provider quota truth.

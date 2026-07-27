@@ -14,6 +14,7 @@ from _cli_harness import run_cli  # noqa: E402
 
 from omh.coding.fanout import build_fanout_contract  # noqa: E402
 from omh.coding.fanout_artifacts import write_fanout_contract  # noqa: E402
+from omh.coding.fanout_artifacts import fanout_dispatch_summary_path  # noqa: E402
 from omh.coding.fanout_dispatch import dispatch_fanout, verify_goal_matches_contract  # noqa: E402
 from omh.runtime.artifacts import show_run  # noqa: E402
 from omh.system.paths import OmhPaths  # noqa: E402
@@ -482,7 +483,7 @@ class FanoutDispatchTelemetryTests(unittest.TestCase):
                 paths, contract, goal_text=_GOAL, repo_root=repo, base_sha=sha,
                 runner=_agent_runner(), readiness=_ready,
             )
-            stored_path = paths.fanout_dispatch_summary_path(str(contract["fanout_id"]))
+            stored_path = fanout_dispatch_summary_path(paths, str(contract["fanout_id"]))
             self.assertTrue(stored_path.is_file())
             stored = json.loads(stored_path.read_text(encoding="utf-8"))
             self.assertEqual(stored["schema_version"], "fanout_dispatch_summary/v1")
@@ -499,7 +500,7 @@ class FanoutDispatchTelemetryTests(unittest.TestCase):
                 paths, contract, goal_text=_GOAL, repo_root=repo, base_sha=sha,
                 dry_run=True, runner=_agent_runner(), readiness=_ready,
             )
-            self.assertFalse(paths.fanout_dispatch_summary_path(str(contract["fanout_id"])).exists())
+            self.assertFalse(fanout_dispatch_summary_path(paths, str(contract["fanout_id"])).exists())
 
     def test_limit_shaped_failure_is_classified_and_recorded(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -533,6 +534,54 @@ class FanoutDispatchTelemetryTests(unittest.TestCase):
             shown = show_run(paths, by_unit["core"]["run_ref"])
             result_events = [e for e in shown["journal_events"] if e["event"] == "executor_result_observed"]
             self.assertIn("limit-shaped failure (usage_limit)", result_events[-1]["summary"])
+
+    def test_unrelated_429_and_disk_quota_text_are_not_limit_shaped(self) -> None:
+        with TemporaryDirectory() as tmp:
+            units = [
+                {"unit_id": "core", "title": "Core", "owner": "codex", "file_scope": ["src/core/"]},
+                {"unit_id": "docs", "title": "Docs", "owner": "claude-code", "file_scope": ["docs/"]},
+            ]
+            paths, repo, sha, contract = self._setup(tmp, units=units)
+
+            def runner(argv, **kwargs):
+                if argv[0] == "git":
+                    return subprocess.run(argv, **kwargs)
+                if argv[0] == "codex":
+                    return _FakeCompleted(1, 'Traceback: File "src/foo.py", line 429, in bar\nAssertionError')
+                completed = _FakeCompleted(1, "tests failed")
+                completed.stderr = "error: disk quota check skipped"
+                return completed
+
+            summary = dispatch_fanout(
+                paths, contract, goal_text=_GOAL, repo_root=repo, base_sha=sha,
+                runner=runner, readiness=_ready,
+            )
+            for entry in summary["units"]:
+                self.assertNotIn("limit_shaped", entry, entry["unit_id"])
+            self.assertFalse(paths.executor_limit_signals_path.exists())
+
+    def test_successful_dispatch_clears_a_prior_limit_signal(self) -> None:
+        with TemporaryDirectory() as tmp:
+            units = [{"unit_id": "core", "title": "Core", "owner": "codex", "file_scope": ["src/core/"]}]
+            paths, repo, sha, contract = self._setup(tmp, units=units + [
+                {"unit_id": "docs", "title": "Docs", "owner": "claude-code", "file_scope": ["docs/"]},
+            ])
+            from omh.system.local_store import atomic_write_json
+
+            atomic_write_json(
+                paths.executor_limit_signals_path,
+                {
+                    "schema_version": "executor_limit_signals/v1",
+                    "profiles": {"codex": {"pattern_label": "usage_limit"}},
+                },
+                private=True,
+            )
+            dispatch_fanout(
+                paths, contract, goal_text=_GOAL, repo_root=repo, base_sha=sha,
+                runner=_agent_runner(), readiness=_ready,
+            )
+            stored = json.loads(paths.executor_limit_signals_path.read_text(encoding="utf-8"))
+            self.assertNotIn("codex", stored.get("profiles", {}))
 
     def test_successful_exit_is_never_limit_shaped(self) -> None:
         with TemporaryDirectory() as tmp:

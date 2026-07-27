@@ -8,6 +8,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from ..runtime.artifacts import append_journal_observation, create_run, show_run
 from ..system.local_store import atomic_write_json, locked_json_update, utc_now
+from ..system.metadata_safety import redact_metadata_text
 from ..system.paths import OmhPaths
 from .executor_readiness import probe_executor_readiness
 from .fanout_contracts import FANOUT_CLAIM_BOUNDARY
@@ -26,12 +27,20 @@ EXECUTOR_LIMIT_SIGNALS_CLAIM_BOUNDARY = (
 
 # Deterministic limit-shape patterns, matched case-insensitively over the
 # in-memory stdout/stderr tails of a FAILED spawn only. Only the boolean and
-# the matched label are persisted — never the matched text itself.
+# the matched label are persisted — never the matched text itself. Every
+# pattern is anchored to limit context: bare "429" or "quota" would match a
+# stack-trace line number or a disk-quota message and fabricate provider
+# evidence from unrelated text.
 _LIMIT_SHAPED_PATTERNS: tuple[tuple[str, str], ...] = (
     ("rate_limit", "rate limit"),
     ("usage_limit", "usage limit"),
-    ("quota", "quota"),
-    ("http_429", "429"),
+    ("quota_exceeded", "quota exceed"),
+    ("quota_exceeded", "quota exhaust"),
+    ("quota_exceeded", "api quota"),
+    ("http_429", "status 429"),
+    ("http_429", "error 429"),
+    ("http_429", "http 429"),
+    ("http_429", "429 too many"),
     ("credit", "insufficient credit"),
     ("credit", "out of credits"),
     ("limit_reached", "limit reached"),
@@ -232,10 +241,51 @@ def dispatch_fanout(
     }
     fanout_id = str(contract.get("fanout_id", "") or "")
     if not dry_run and fanout_id:
-        # Latest-wins metadata-only persistence so `omh coding fanout brief`
-        # can join observed telemetry without replaying the journal.
-        atomic_write_json(paths.fanout_dispatch_summary_path(fanout_id), summary, private=True)
+        from .fanout_artifacts import fanout_dispatch_summary_path
+
+        # Metadata-only persistence so `omh coding fanout brief` can join
+        # observed telemetry without replaying the journal. The validated
+        # helper re-checks the id pattern and containment because this
+        # fanout_id comes from the contract body, not the CLI argument.
+        # Per-unit entries merge with the stored summary so a partial
+        # re-dispatch (`--unit b`) does not erase unit a's observed telemetry
+        # with a skipped placeholder.
+        summary_path = fanout_dispatch_summary_path(paths, fanout_id)
+        stored = _merged_dispatch_summary(summary_path, summary)
+        atomic_write_json(summary_path, stored, private=True)
     return summary
+
+
+_DISPATCH_SKIP_STATUSES = frozenset({"already_completed", "not_selected"})
+
+
+def _merged_dispatch_summary(summary_path: Path, summary: dict[str, Any]) -> dict[str, Any]:
+    from ..system.local_store import read_json_object_result
+
+    previous, _error = read_json_object_result(summary_path)
+    previous_units = {
+        str(entry.get("unit_id", "")): entry
+        for entry in (previous or {}).get("units", [])
+        if isinstance(entry, dict)
+    }
+    merged_units = []
+    for entry in summary.get("units", []):
+        if not isinstance(entry, dict):
+            continue
+        unit_id = str(entry.get("unit_id", ""))
+        earlier = previous_units.get(unit_id)
+        if entry.get("status") in _DISPATCH_SKIP_STATUSES and isinstance(earlier, dict):
+            # A skipped unit carries no telemetry; the earlier observed entry
+            # is the richer record and stays.
+            merged_units.append(earlier)
+        else:
+            merged_units.append(entry)
+    merged = dict(summary)
+    merged["units"] = merged_units
+    merged["merge_ready_units"] = [
+        str(entry.get("unit_id")) for entry in merged_units if isinstance(entry, dict) and entry.get("merge_ready")
+    ]
+    return merged
 
 
 def _dispatch_unit(
@@ -256,6 +306,7 @@ def _dispatch_unit(
     owner = str(handoff.get("executor_target", "choose"))
     model_route = handoff.get("model_route") if isinstance(handoff.get("model_route"), Mapping) else None
     routed_model = str(model_route.get("selected_model", "") or "") if model_route else ""
+    routed_effort = str(model_route.get("selected_reasoning_effort", "") or "") if model_route else ""
     if DISPATCH_COMMAND_TEMPLATES.get(owner) is None:
         return {
             "unit_id": unit_id,
@@ -342,8 +393,16 @@ def _dispatch_unit(
     limit_label = _limit_shaped_label(output_tail, stderr_tail) if exit_code != 0 else ""
     if limit_label:
         _record_limit_signal(paths, owner, run_ref=run_ref, unit_id=unit_id, pattern_label=limit_label)
+    elif exit_code == 0:
+        # A successful dispatch to this executor is the freshest evidence the
+        # provider is serving it again; a stale limit signal must not keep
+        # down-ranking the executor forever.
+        _clear_limit_signal(paths, owner)
     status = "observed" if exit_code == 0 else "failed"
-    summary = f"unit {unit_id} exit {exit_code} after {duration_seconds}s: {output_tail[-300:]}"
+    summary = (
+        f"unit {unit_id} exit {exit_code} after {duration_seconds}s: "
+        f"{redact_metadata_text(output_tail[-300:], limit=300)}"
+    )
     if limit_label:
         summary = f"limit-shaped failure ({limit_label}); {summary}"
     append_journal_observation(
@@ -364,6 +423,7 @@ def _dispatch_unit(
         "run_ref": run_ref,
         "owner": owner,
         "model": routed_model,
+        "reasoning_effort": routed_effort,
         "status": "completed" if exit_code == 0 else "failed",
         "exit_code": exit_code,
         "worktree_path": str(worktree),
@@ -485,4 +545,26 @@ def _record_limit_signal(paths: OmhPaths, owner: str, *, run_ref: str, unit_id: 
         state["claim_boundary"] = EXECUTOR_LIMIT_SIGNALS_CLAIM_BOUNDARY
         return state
 
-    locked_json_update(paths.executor_limit_signals_path, _update, private=True)
+    try:
+        locked_json_update(paths.executor_limit_signals_path, _update, private=True)
+    except (OSError, TimeoutError):
+        # An advisory that cannot be written must never abort the dispatch —
+        # losing the whole summary over a lock timeout would be worse than
+        # missing one ranking hint.
+        pass
+
+
+def _clear_limit_signal(paths: OmhPaths, owner: str) -> None:
+    if not paths.executor_limit_signals_path.exists():
+        return
+
+    def _update(state: dict[str, Any]) -> dict[str, Any]:
+        profiles = state.get("profiles")
+        if isinstance(profiles, dict):
+            profiles.pop(owner, None)
+        return state
+
+    try:
+        locked_json_update(paths.executor_limit_signals_path, _update, private=True)
+    except (OSError, TimeoutError):
+        pass

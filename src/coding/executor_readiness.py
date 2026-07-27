@@ -277,10 +277,25 @@ def executor_choice_context(paths: OmhPaths) -> dict[str, object]:
                 "last_limit_signal": last_limit_signal_for_profile(paths, profile),
             }
         )
+    # Advisory ranking, never a veto: logged-in first, then no fresh limit
+    # signal, then cached-ready, with the fixed profile order as tiebreak so
+    # equal candidates stay deterministic.
+    candidates.sort(key=_choice_context_rank)
     return {
         "candidates": candidates,
+        "ranked_by": ("login_marker", "fresh_limit_signal_absent", "readiness_status"),
         "claim_boundary": EXECUTOR_CHOICE_CONTEXT_CLAIM_BOUNDARY,
     }
+
+
+def _choice_context_rank(candidate: dict[str, object]) -> tuple[int, int, int, int]:
+    auth = candidate.get("auth_signal")
+    login = str(auth.get("login_marker", "")) if isinstance(auth, dict) else ""
+    limit = candidate.get("last_limit_signal")
+    fresh_limit = isinstance(limit, dict) and bool(limit) and not limit.get("stale", False)
+    ready = str(candidate.get("readiness_status", "")) == "ready"
+    original = EXECUTOR_CHOICE_CONTEXT_PROFILES.index(str(candidate.get("profile", "")))
+    return (0 if login == "present" else 1, 1 if fresh_limit else 0, 0 if ready else 1, original)
 
 
 def _ready_action(profile: str) -> str:
