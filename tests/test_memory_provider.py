@@ -744,29 +744,111 @@ class DoctorSlotReportTests(unittest.TestCase):
             str(check["message"]) for check in payload["checks"] if check["name"] == "memory_provider"
         )
 
-    def test_an_unset_slot_is_reported_without_failing(self) -> None:
-        # Hermes' built-in memory is a fine state; this is an invitation, not a fault.
+    def test_an_off_state_points_at_a_command_ordinary_users_know(self) -> None:
+        # `omh setup` claims a free slot, so this is what an unset one means --
+        # and setup is one of the three commands AGENTS.md says people should
+        # need. Naming `omh memory provider --enable` here would send them to
+        # the control plane for something setup already does.
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".hermes").mkdir(parents=True)
             (root / ".hermes" / "config.yaml").write_text("memory:\n  provider: ''\n", encoding="utf-8")
-            self.assertIn("unset", self._message(self._doctor(root)))
+            message = self._message(self._doctor(root))
+            self.assertIn("omh setup", message)
+            self.assertNotIn("omh memory provider", message)
 
-    def test_a_slot_held_by_another_product_is_named(self) -> None:
+    def test_a_slot_held_by_another_product_reads_as_working_not_broken(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".hermes").mkdir(parents=True)
             (root / ".hermes" / "config.yaml").write_text("memory:\n  provider: honcho\n", encoding="utf-8")
             message = self._message(self._doctor(root))
             self.assertIn("honcho", message)
-            self.assertIn("not running", message)
+            self.assertIn("not a fault", message)
 
     def test_omh_holding_the_slot_reads_as_healthy(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".hermes").mkdir(parents=True)
             (root / ".hermes" / "config.yaml").write_text("memory:\n  provider: omh\n", encoding="utf-8")
-            self.assertIn("is omh", self._message(self._doctor(root)))
+            self.assertIn("OMH memory is on", self._message(self._doctor(root)))
+
+
+class SetupTurnsMemoryOnTests(unittest.TestCase):
+    """A capability that needs a control-plane command is one most people never get.
+
+    AGENTS.md says ordinary users should only need `omh setup`, `omh update`,
+    and `omh doctor`. The provider first shipped requiring `omh memory provider
+    --enable`, which put it outside that set entirely. Setup claims the slot now
+    -- but only when it is free.
+    """
+
+    def _base(self, root: Path) -> list[str]:
+        return ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+
+    def test_setup_turns_memory_on_when_the_slot_is_free(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            status, stdout, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(json.loads(stdout)["steps"]["apply"]["memory_provider"]["selected"], MEMORY_PROVIDER_NAME)
+            self.assertIn("provider: omh", (root / ".hermes" / "config.yaml").read_text(encoding="utf-8"))
+
+    def test_setup_never_takes_a_slot_another_product_holds(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / ".hermes" / "config.yaml"
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text("memory:\n  provider: honcho\n", encoding="utf-8")
+
+            status, stdout, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            provider = json.loads(stdout)["steps"]["apply"]["memory_provider"]
+            self.assertFalse(provider["changed"])
+            self.assertEqual(provider["selected"], "honcho")
+            self.assertIn("provider: honcho", config.read_text(encoding="utf-8"))
+
+    def test_setup_is_idempotent_on_the_slot(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(self._base(root) + ["setup"])
+            _, stdout, _ = run_cli(self._base(root) + ["setup"])
+            provider = json.loads(stdout)["steps"]["apply"]["memory_provider"]
+            self.assertFalse(provider["changed"])
+            self.assertEqual(provider["selected"], MEMORY_PROVIDER_NAME)
+
+    def test_a_dry_run_setup_writes_no_provider_selection(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            status, _, stderr = run_cli(self._base(root) + ["setup", "--dry-run"])
+            self.assertEqual(status, 0, stderr)
+            self.assertFalse((root / ".hermes" / "config.yaml").exists())
+
+    def test_the_summary_tells_the_user_memory_is_on(self) -> None:
+        # The JSON payload is for wrappers; this line is what a person reads.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, stdout, _ = run_cli(self._base(root) + ["setup"], output_json=False)
+            self.assertIn("Memory: OMH remembers across sessions", stdout)
+
+    def test_the_summary_explains_an_off_state_rather_than_staying_silent(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / ".hermes" / "config.yaml"
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text("memory:\n  provider: honcho\n", encoding="utf-8")
+            _, stdout, _ = run_cli(self._base(root) + ["setup"], output_json=False)
+            self.assertIn("honcho", stdout)
+            self.assertIn("OMH memory stays off", stdout)
+
+    def test_an_operator_can_still_hand_the_slot_back(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(self._base(root) + ["setup"])
+            status, stdout, stderr = run_cli(self._base(root) + ["memory", "provider", "--disable"])
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue(json.loads(stdout)["changed"])
+            self.assertFalse(json.loads(stdout)["is_omh"])
 
 
 class BlockBudgetDefaultTests(unittest.TestCase):

@@ -296,19 +296,21 @@ def _memory_provider_check(config_text: str) -> Check:
     """
     selection = memory_provider_selection(config_text)
     if selection == MEMORY_PROVIDER_NAME:
-        return Check("memory_provider", True, "Hermes memory.provider is omh")
+        return Check("memory_provider", True, "OMH memory is on; it recalls and consolidates across sessions")
     if selection:
         return Check(
             "memory_provider",
             True,
-            f"Hermes memory.provider is {selection}; OMH memory hooks are not running. "
-            "Run `omh memory provider --enable` after clearing it to switch.",
+            f"Hermes memory is handled by {selection}, so OMH memory stays off. Hermes runs one "
+            "memory provider at a time; this is a working state, not a fault.",
         )
+    # `omh setup` claims a free slot, so an unset one means setup has not run
+    # here or someone turned it off. Point at the command an ordinary user
+    # already knows rather than at the control-plane one.
     return Check(
         "memory_provider",
         True,
-        "Hermes memory.provider is unset (built-in memory). Run `omh memory provider --enable` "
-        "to let OMH recall and journal memory automatically.",
+        "OMH memory is off. Run `omh setup` to turn it on so OMH remembers across sessions.",
     )
 
 

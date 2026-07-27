@@ -26,8 +26,10 @@ from ..config_adapter import (
     ensure_external_dir,
     ensure_plugin_enabled,
     external_dirs,
+    memory_provider_selection,
     read_config,
     remove_external_dir,
+    set_memory_provider,
     write_config,
 )
 from ..install.compression_defaults import ensure_compression_defaults
@@ -48,6 +50,7 @@ from ..manifest import read_manifest
 from ..menubar_app import setup_menubar_app, uninstall_menubar_app
 from ..mcp.host_config import install_mcp_host_config
 from ..mcp_bridge import MCP_HOST_CONFIG_RECIPE_HOSTS
+from ..plugin_bundle.omh.metadata import MEMORY_PROVIDER_NAME
 from ..plugin_pack import PLUGIN_NAME, PluginPackError, install_plugin_bundle
 from ..probe import probe_capabilities
 from ..release import RELEASE_CHANNELS, package_url_for
@@ -786,10 +789,19 @@ def _apply_result(args: argparse.Namespace) -> dict[str, object]:
         # Hermes. Doing only the first leaves an install that passes every
         # structural check while no OMH tool is reachable in chat.
         plugin_enable = ensure_plugin_enabled(compression.text, PLUGIN_NAME)
+        # Same reasoning one layer down. OMH's memory provider ships inside the
+        # bundle, and a provider Hermes never selects is a provider that never
+        # runs -- so requiring a control-plane command to switch it on meant the
+        # people AGENTS.md says should only need setup/update/doctor would never
+        # have it. Claims the slot only when it is free; `set_memory_provider`
+        # refuses when another product holds it, because Hermes runs exactly one.
+        memory_provider = set_memory_provider(plugin_enable.text, MEMORY_PROVIDER_NAME)
     except ValueError as exc:
         raise OmhError(str(exc)) from exc
-    if not args.dry_run and (change.changed or compression.changed or plugin_enable.changed):
-        write_config(paths.hermes_config_path, plugin_enable.text)
+    if not args.dry_run and (
+        change.changed or compression.changed or plugin_enable.changed or memory_provider.changed
+    ):
+        write_config(paths.hermes_config_path, memory_provider.text)
     if not args.dry_run:
         update_state(
             paths,
@@ -807,6 +819,11 @@ def _apply_result(args: argparse.Namespace) -> dict[str, object]:
         "dry_run": args.dry_run,
         "compression_defaults": {"changed": compression.changed, "message": compression.message},
         "plugin_enabled": {"changed": plugin_enable.changed, "message": plugin_enable.message},
+        "memory_provider": {
+            "changed": memory_provider.changed,
+            "message": memory_provider.message,
+            "selected": memory_provider_selection(memory_provider.text),
+        },
     }
 
 
@@ -1830,6 +1847,8 @@ def _print_setup_summary(payload: dict[str, object], *, language: str = "en") ->
     if isinstance(plugin, dict):
         print(f"  {tr(language, 'plugin_bridge', status=_plugin_status_label(language, str(plugin.get('status', 'installed'))))}")
 
+    _print_memory_provider_summary(steps, language)
+
     menubar = steps.get("menubar")
     if isinstance(menubar, dict) and str(menubar.get("status", "not_requested")) != "not_requested":
         status = str(menubar.get("status", "unknown"))
@@ -2690,6 +2709,26 @@ def _mcp_status_label(language: str, status: str) -> str:
         },
     }
     return labels.get(code, labels["en"]).get(status, status)
+
+
+def _print_memory_provider_summary(steps: dict[str, object], language: str) -> None:
+    """Say, in one line, that memory is on -- or why it is not.
+
+    A capability nobody is told about is one nobody uses. This is the summary a
+    normal user actually reads, so it names the outcome rather than the config
+    key, and it stays silent when the slot is simply free and unclaimed.
+    """
+    apply_step = steps.get("apply")
+    if not isinstance(apply_step, dict):
+        return
+    provider = apply_step.get("memory_provider")
+    if not isinstance(provider, dict):
+        return
+    selected = str(provider.get("selected", "") or "")
+    if selected == MEMORY_PROVIDER_NAME:
+        print(f"  {tr(language, 'memory_provider_on')}")
+    elif selected:
+        print(f"  {tr(language, 'memory_provider_other', provider=selected)}")
 
 
 def _plugin_setup_result(args: argparse.Namespace, paths) -> dict[str, object]:
