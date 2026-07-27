@@ -46,6 +46,7 @@ from ..installer import (
     uninstall_skill_pack,
 )
 from ..local_store import atomic_write_text
+from ..install.installer import DEFAULT_SKILL_PROFILE, SKILL_PROFILES
 from ..manifest import read_manifest
 from ..menubar_app import setup_menubar_app, uninstall_menubar_app
 from ..mcp.host_config import install_mcp_host_config
@@ -119,7 +120,7 @@ def _install_result(args: argparse.Namespace) -> dict[str, object]:
     previous_release = _previous_release_update_state(paths)
     # Read before install_skill_pack rewrites the manifest.
     previous_manifest_sha256 = _previous_manifest_sha256(paths)
-    skill_profile = "full" if getattr(args, "full", False) else "core"
+    skill_profile = _resolved_skill_profile(args, paths)
     result = install_skill_pack(
         paths,
         source=source,
@@ -443,6 +444,25 @@ def _explicit_release_metadata_supplied(args: argparse.Namespace) -> bool:
         str(getattr(args, key, "") or "").strip()
         for key in ("source_ref", "version", "package_url")
     )
+
+
+def _resolved_skill_profile(args: argparse.Namespace, paths) -> str:
+    """The profile this run should record: what was asked for, else what is installed.
+
+    This used to be `"full" if --full else "core"`, which reset the recorded
+    profile on every run. An operator who installed the full catalog and then
+    ran plain `omh update` had their manifest rewritten to `core` while all the
+    full-only skills stayed on disk -- installs never delete -- so the install
+    reported a profile it did not have and told them to run `omh skill-profile
+    reconcile` to resolve a divergence nothing had asked for.
+
+    An update carries the install forward. Only `--full` and an explicit
+    reconcile change the profile, and reconcile stays the one path that deletes.
+    """
+    if bool(getattr(args, "full", False)):
+        return "full"
+    installed = str((read_manifest(paths.manifest_path) or {}).get("skill_profile") or "")
+    return installed if installed in SKILL_PROFILES else DEFAULT_SKILL_PROFILE
 
 
 def _previous_manifest_sha256(paths) -> str:
