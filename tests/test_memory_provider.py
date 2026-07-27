@@ -1034,9 +1034,16 @@ class ChatNoticeOnEveryMessengerTests(unittest.TestCase):
     did not exist. The notice attaches at the one seam every chat surface passes
     through, so covering the seam covers Slack, Telegram, Discord, CLI, and
     desktop at once.
+
+    The review pass on the first version confirmed two failures by execution:
+    a schema-valid brief whose ``reasons`` was an int crashed every chat turn,
+    and nothing ever retired a brief, so the notice suffixed every reply
+    forever. Both are pinned here now.
     """
 
-    NOTICE_LINE = "Memory tidy-up is pending"
+    NOTICE_KO = "기억 정리가 밀려 있습니다"
+    NOTICE_EN = "Memory tidy-up is pending"
+    KO_MESSAGE = "이 레포에 기능 하나 안전하게 추가하고 싶어"
 
     def _due_paths(self, root: Path):
         from omh.paths import resolve_paths
@@ -1046,29 +1053,42 @@ class ChatNoticeOnEveryMessengerTests(unittest.TestCase):
         (memories / "MEMORY.md").write_text("x" * 2100, encoding="utf-8")
         provider = OmhMemoryProvider(root / ".omh")
         provider.initialize("s", hermes_home=str(root / ".hermes"), agent_context="primary")
-        return resolve_paths(root / ".omh", root / ".hermes")
+        return provider, resolve_paths(root / ".omh", root / ".hermes")
 
-    def _payload(self, paths, source: str) -> dict:
+    def _payload(self, paths, source: str, message: str | None = None) -> dict:
         from omh.wrapper.contract import build_chat_interaction_payload
 
-        return build_chat_interaction_payload("이 레포에 기능 하나 안전하게 추가하고 싶어", source=source, paths=paths)
+        return build_chat_interaction_payload(message or self.KO_MESSAGE, source=source, paths=paths)
 
     def test_every_chat_source_carries_the_notice_in_its_rendered_body(self) -> None:
         from omh.ingress import CHAT_SOURCES
 
         with TemporaryDirectory() as tmp:
-            paths = self._due_paths(Path(tmp))
+            _, paths = self._due_paths(Path(tmp))
             for source in sorted(CHAT_SOURCES):
                 with self.subTest(source=source):
                     payload = self._payload(paths, source)
                     notice = payload.get("memory_consolidation_notice")
                     self.assertIsInstance(notice, dict)
                     self.assertIn("not evidence", str(notice["claim_boundary"]))
-                    body = str(payload["chat_response"]["body"])
-                    self.assertIn(self.NOTICE_LINE, body)
-                    rendering = payload["chat_response"].get("messenger_rendering")
-                    if isinstance(rendering, dict):
-                        self.assertIn(self.NOTICE_LINE, str(rendering.get("body_text", "")))
+                    self.assertTrue(notice["raised_at"])
+                    self.assertIn(self.NOTICE_KO, str(payload["chat_response"]["body"]))
+                    # Unconditional on purpose: a vacuous isinstance guard here
+                    # is exactly the regression this assertion exists to catch.
+                    rendering = payload["chat_response"]["messenger_rendering"]
+                    self.assertIn(self.NOTICE_KO, str(rendering["body_text"]))
+
+    def test_the_notice_speaks_the_language_of_the_card(self) -> None:
+        # The routed card's copy is localized; an English suffix on a Korean
+        # body reads as a glitch. Same brief, two messages, two languages.
+        with TemporaryDirectory() as tmp:
+            _, paths = self._due_paths(Path(tmp))
+            korean = str(self._payload(paths, "slack")["chat_response"]["body"])
+            english = str(self._payload(paths, "slack", "I want to add a feature safely")["chat_response"]["body"])
+            self.assertIn(self.NOTICE_KO, korean)
+            self.assertNotIn(self.NOTICE_EN, korean)
+            self.assertIn(self.NOTICE_EN, english)
+            self.assertNotIn(self.NOTICE_KO, english)
 
     def test_the_routed_card_is_not_displaced(self) -> None:
         # Additive means additive: same kind, same headline, one extra sentence.
@@ -1078,7 +1098,8 @@ class ChatNoticeOnEveryMessengerTests(unittest.TestCase):
 
             clean = resolve_paths(root / ".clean-omh", root / ".clean-hermes")
             control = self._payload(clean, "slack")["chat_response"]
-            noticed = self._payload(self._due_paths(root), "slack")["chat_response"]
+            _, paths = self._due_paths(root)
+            noticed = self._payload(paths, "slack")["chat_response"]
             self.assertEqual(noticed["kind"], control["kind"])
             self.assertEqual(noticed["headline"], control["headline"])
             self.assertTrue(str(noticed["body"]).startswith(str(control["body"])))
@@ -1090,29 +1111,87 @@ class ChatNoticeOnEveryMessengerTests(unittest.TestCase):
             paths = resolve_paths(Path(tmp) / ".omh", Path(tmp) / ".hermes")
             payload = self._payload(paths, "telegram")
             self.assertNotIn("memory_consolidation_notice", payload)
-            self.assertNotIn(self.NOTICE_LINE, str(payload["chat_response"]["body"]))
+            self.assertNotIn(self.NOTICE_KO, str(payload["chat_response"]["body"]))
 
-    def test_an_unreadable_brief_degrades_to_no_notice(self) -> None:
+    def test_a_malformed_brief_never_takes_down_a_turn(self) -> None:
+        # The first version crashed here: valid JSON, right schema string,
+        # reasons an int -- and the TypeError escaped through every messenger.
+        cases = (
+            {"schema_version": "omh_memory_consolidation_handoff/v1", "due": True, "reasons": 5},
+            {"schema_version": "omh_memory_consolidation_handoff/v1", "due": True, "reasons": None},
+            {"schema_version": "omh_memory_consolidation_handoff/v1", "due": True, "reasons": "headroom"},
+            {"schema_version": "omh_memory_consolidation_handoff/v1", "due": True, "reasons": {"a": 1}},
+            "{not json",
+        )
+        for case in cases:
+            with self.subTest(case=str(case)[:40]), TemporaryDirectory() as tmp:
+                from omh.paths import resolve_paths
+
+                root = Path(tmp)
+                broken = root / ".omh" / "memory" / "consolidation.json"
+                broken.parent.mkdir(parents=True, exist_ok=True)
+                broken.write_text(case if isinstance(case, str) else json.dumps(case), encoding="utf-8")
+                payload = self._payload(resolve_paths(root / ".omh", root / ".hermes"), "slack")
+                self.assertNotIn("memory_consolidation_notice", payload)
+
+    def test_the_notice_retires_once_consolidation_is_observed(self) -> None:
+        # A Hermes memory write is what an actual consolidation looks like from
+        # here. Before: the brief was never rewritten, so the notice suffixed
+        # every reply forever, including after the user complied.
         with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider, paths = self._due_paths(root)
+            self.assertIn("memory_consolidation_notice", self._payload(paths, "slack"))
+
+            (root / ".hermes" / "memories" / "MEMORY.md").write_text("short note", encoding="utf-8")
+            provider.on_memory_write("replace", "memory", "short note")
+
+            payload = self._payload(paths, "slack")
+            self.assertNotIn("memory_consolidation_notice", payload)
+            self.assertNotIn(self.NOTICE_KO, str(payload["chat_response"]["body"]))
+            brief = json.loads((root / ".omh" / "memory" / "consolidation.json").read_text(encoding="utf-8"))
+            self.assertFalse(brief["due"])
+            self.assertEqual(brief["superseded_by_trigger"], "memory_write")
+
+    def test_the_notice_persists_while_the_condition_still_holds(self) -> None:
+        # Suppression (#700) stops repeated briefs; it must not retire one. A
+        # memory write that does NOT clear the pressure keeps the notice alive.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider, paths = self._due_paths(root)
+            provider.on_turn_start(1, "hi")
+            provider.on_memory_write("add", "memory", "still full")
+            self.assertIn("memory_consolidation_notice", self._payload(paths, "slack"))
+
+    def test_an_interval_brief_survives_the_turn_after_it_fired(self) -> None:
+        # Event reasons clear themselves by firing -- the counter resets -- so
+        # "nothing standing" one turn later is not evidence anyone consolidated.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
             from omh.paths import resolve_paths
 
-            root = Path(tmp)
-            broken = root / ".omh" / "memory" / "consolidation.json"
-            broken.parent.mkdir(parents=True, exist_ok=True)
-            broken.write_text("{not json", encoding="utf-8")
-            payload = self._payload(resolve_paths(root / ".omh", root / ".hermes"), "slack")
-            self.assertNotIn("memory_consolidation_notice", payload)
+            memories = root / ".hermes" / "memories"
+            memories.mkdir(parents=True, exist_ok=True)
+            (memories / "MEMORY.md").write_text("plenty of headroom", encoding="utf-8")
+            provider = OmhMemoryProvider(root / ".omh")
+            provider.initialize("s", hermes_home=str(root / ".hermes"), agent_context="primary")
+            for turn in range(1, DEFAULT_TURN_INTERVAL + 2):
+                provider.on_turn_start(turn, "hi")
+            paths = resolve_paths(root / ".omh", root / ".hermes")
+            self.assertIn("memory_consolidation_notice", self._payload(paths, "slack"))
 
     def test_messenger_copy_carries_no_filesystem_paths(self) -> None:
         # A Slack channel is a shared surface; a local path in the body leaks
-        # the operator's machine layout to everyone in it.
+        # the operator's machine layout to everyone in it. The structured
+        # notice is wrapper-facing and equally shared, so it is scanned too.
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            payload = self._payload(self._due_paths(root), "slack")
-            body = str(payload["chat_response"]["body"])
-            self.assertNotIn(str(root), body)
-            self.assertNotIn("/Users/", body)
-            self.assertNotIn(".omh", body)
+            _, paths = self._due_paths(root)
+            payload = self._payload(paths, "slack")
+            for surface in (str(payload["chat_response"]["body"]), json.dumps(payload["memory_consolidation_notice"])):
+                self.assertNotIn(str(root), surface)
+                self.assertNotIn("/Users/", surface)
+                self.assertNotIn(".omh", surface)
 
     def test_the_cached_pathless_call_stays_notice_free(self) -> None:
         # The cache key excludes any OMH home, so a cached payload must never
@@ -1143,7 +1222,7 @@ class ChatNoticeOnEveryMessengerTests(unittest.TestCase):
                             )
                         )
                         self.assertIn("memory_consolidation_notice", out)
-                        self.assertIn(self.NOTICE_LINE, str(out["chat_response"]["body"]))
+                        self.assertIn(self.NOTICE_KO, str(out["chat_response"]["body"]))
 
 
 class BlockBudgetDefaultTests(unittest.TestCase):

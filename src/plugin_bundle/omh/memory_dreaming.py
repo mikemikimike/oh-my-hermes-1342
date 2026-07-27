@@ -146,6 +146,7 @@ def consolidation_reasons(
     duplicate_count: int = 0,
     expiring_count: int = 0,
     session_ending: bool = False,
+    suppress: bool = True,
 ) -> list[str]:
     """Why consolidation is due now, or an empty list when it is not.
 
@@ -184,6 +185,13 @@ def consolidation_reasons(
         reasons.append(f"duplicate_records:{duplicate_count}")
     if expiring_count > 0:
         reasons.append(f"expiring_records:{expiring_count}")
+    # ``suppress=False`` answers a different question: not "should a new brief
+    # fire now" but "is anything still true at all". Retirement needs the
+    # second -- a suppressed standing condition is still standing, and retiring
+    # its brief because the scheduler declined to repeat it would clear a
+    # notice whose fact had not cleared.
+    if not suppress:
+        return reasons
     return reasons if _has_unfired_reason(reasons, state) else []
 
 
@@ -236,6 +244,7 @@ def build_consolidation_handoff(
     trigger: str = "manual",
     messages_at_risk: int = 0,
     session_id: str = "",
+    raised_at: str = "",
 ) -> dict[str, object]:
     """A prepared brief for whoever actually consolidates.
 
@@ -256,6 +265,10 @@ def build_consolidation_handoff(
         "mode": normalize_dreaming_mode(mode),
         "due": bool(reasons),
         "trigger": trigger,
+        # The brief's own timestamp. `last_consolidated_at` in the dreaming
+        # state is when the PREVIOUS brief fired, which is strictly earlier;
+        # labelling that "raised_at" mislabelled it for every consumer.
+        "raised_at": raised_at,
         "session_id": session_id,
         "messages_at_risk": messages_at_risk,
         "reasons": list(reasons),
@@ -277,9 +290,13 @@ def consolidation_path(omh_home: str | Path) -> Path:
 def read_latest_consolidation(omh_home: str | Path) -> dict[str, Any] | None:
     """The newest brief on disk, or None when there is none to read.
 
-    Never raises. A brief nobody can read is a brief nobody has to act on, and
-    an unreadable file must not take down whatever asked -- `omh doctor`, in
-    the case this exists for.
+    Never raises, and never returns fields a consumer has to type-check. The
+    first version validated only that the file was a dict with the right
+    schema string and passed everything else through -- so a brief whose
+    ``reasons`` was an int survived the read and raised ``TypeError`` in the
+    consumer, which for the chat notice meant one malformed local file took
+    down every reply on every messenger. Fields are normalized here, once,
+    for every consumer.
     """
     path = consolidation_path(omh_home)
     try:
@@ -290,7 +307,18 @@ def read_latest_consolidation(omh_home: str | Path) -> dict[str, Any] | None:
         return None
     if not isinstance(data, dict) or data.get("schema_version") != DREAMING_HANDOFF_SCHEMA_VERSION:
         return None
-    return data
+    raw_reasons = data.get("reasons")
+    normalized = dict(data)
+    normalized["due"] = bool(data.get("due"))
+    normalized["reasons"] = (
+        [reason for reason in raw_reasons if isinstance(reason, str)] if isinstance(raw_reasons, list) else []
+    )
+    normalized["trigger"] = str(data.get("trigger", "") or "")
+    normalized["raised_at"] = str(data.get("raised_at", "") or "")
+    if normalized["due"] and not normalized["reasons"]:
+        # A brief that claims to be due but cannot say why is not actionable.
+        normalized["due"] = False
+    return normalized
 
 
 def normalize_dreaming_mode(value: str | None) -> str:

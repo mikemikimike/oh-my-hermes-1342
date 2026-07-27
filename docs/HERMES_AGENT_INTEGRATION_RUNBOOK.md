@@ -92,6 +92,12 @@ The returned envelope is safe for a wrapper to render without parsing prose:
   topology changed from one target to many or many to one.
 - `target_topology`: optional `omh_target_topology/v1` summary with
   `active_agent_count`, `current_target_id`, and `requires_skill_scope_awareness`.
+- `memory_consolidation_notice`: optional `omh_memory_consolidation_notice/v1`
+  carried while a memory-consolidation brief is pending, with `reasons`,
+  `trigger`, `raised_at`, and `next_action: ask_hermes_to_consolidate_memory`.
+  The matching localized sentence is already appended to `chat_response.body`;
+  the notice is prepared context, never consolidation evidence, and it retires
+  once the underlying conditions clear.
 - `plan`, `delegation`, or `status`: optional machine-readable payload for the
   selected mode.
 

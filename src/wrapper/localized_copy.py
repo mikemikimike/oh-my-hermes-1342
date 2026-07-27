@@ -569,3 +569,89 @@ def skill_picker_body(
         )
     lines.extend(["", family_heading, *family_lines])
     return "\n".join(lines)
+
+
+# The consolidation notice is one sentence appended to whatever card the router
+# chose, and that card's copy is already in the reader's language. An English
+# suffix on a Korean body reads as a glitch, so the sentence and its reason
+# phrases localize through the same locale the card used.
+_CONSOLIDATION_NOTICE_SENTENCES = {
+    "en": "Memory tidy-up is pending ({summary}). Ask me to review and consolidate memory.",
+    "ko": "기억 정리가 밀려 있습니다 ({summary}). 기억을 검토하고 정리해 달라고 말씀해 주세요.",
+    "ja": "メモリ整理が保留中です（{summary}）。メモリの確認と整理を依頼してください。",
+    "zh": "记忆整理待处理（{summary}）。请让我审查并整理记忆。",
+    "es": "La consolidación de memoria está pendiente ({summary}). Pídeme revisar y consolidar la memoria.",
+}
+
+_CONSOLIDATION_REASON_PHRASES = {
+    "headroom_below_floor": {
+        "en": "memory is nearly full",
+        "ko": "기억이 거의 가득 참",
+        "ja": "メモリがほぼ満杯",
+        "zh": "记忆几乎已满",
+        "es": "la memoria está casi llena",
+    },
+    "turn_interval_reached": {
+        "en": "several turns since the last tidy-up",
+        "ko": "마지막 정리 후 여러 턴 경과",
+        "ja": "前回の整理から数ターン経過",
+        "zh": "距上次整理已过多轮",
+        "es": "varios turnos desde la última consolidación",
+    },
+    "session_ending_with_unconsolidated_turns": {
+        "en": "a session ended with work not yet consolidated",
+        "ko": "정리되지 않은 작업을 남긴 채 세션 종료",
+        "ja": "未整理の作業を残してセッションが終了",
+        "zh": "会话结束时仍有未整理的内容",
+        "es": "una sesión terminó con trabajo sin consolidar",
+    },
+    "context_compaction_observed": {
+        "en": "context was compacted",
+        "ko": "컨텍스트가 압축됨",
+        "ja": "コンテキストが圧縮された",
+        "zh": "上下文已压缩",
+        "es": "el contexto fue compactado",
+    },
+    "duplicate_records": {
+        "en": "duplicate memories were detected",
+        "ko": "중복 기억 발견",
+        "ja": "重複した記憶を検出",
+        "zh": "检测到重复记忆",
+        "es": "se detectaron memorias duplicadas",
+    },
+    "expiring_records": {
+        "en": "some memories are expiring",
+        "ko": "일부 기억이 만료 예정",
+        "ja": "一部の記憶が期限切れ間近",
+        "zh": "部分记忆即将过期",
+        "es": "algunas memorias están por expirar",
+    },
+}
+
+_CONSOLIDATION_FALLBACK_SUMMARY = {
+    "en": "a consolidation brief is waiting",
+    "ko": "정리 안내가 대기 중",
+    "ja": "整理の案内が待機中",
+    "zh": "整理提示等待处理",
+    "es": "hay un aviso de consolidación en espera",
+}
+
+
+def consolidation_notice_line(locale: str, reasons: list[str]) -> str:
+    """The pending-consolidation sentence in the card's language.
+
+    ``reasons`` are the scheduler's own strings (``headroom_below_floor:289<=300``);
+    the value suffix is detail for wrappers, so only the family selects a phrase
+    and an unknown family simply contributes nothing.
+    """
+    resolved = _normalize_locale(locale)
+    if resolved not in _CONSOLIDATION_NOTICE_SENTENCES:
+        resolved = "en"
+    phrases: list[str] = []
+    for reason in reasons:
+        family = reason.split(":", 1)[0]
+        phrase = _CONSOLIDATION_REASON_PHRASES.get(family, {}).get(resolved)
+        if phrase and phrase not in phrases:
+            phrases.append(phrase)
+    summary = "; ".join(phrases) if phrases else _CONSOLIDATION_FALLBACK_SUMMARY[resolved]
+    return _CONSOLIDATION_NOTICE_SENTENCES[resolved].format(summary=summary)

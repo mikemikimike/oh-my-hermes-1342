@@ -56,6 +56,7 @@ from .memory_dreaming import (
     clear_after_consolidation,
     consolidation_reasons,
     read_dreaming_state,
+    read_latest_consolidation,
     record_compaction,
     record_memory_write,
     record_turn,
@@ -176,6 +177,11 @@ class OmhMemoryProvider(_MemoryProviderBase):
             return
         self._append_write_journal(action, target, content, metadata)
         self._mutate_state(record_memory_write)
+        # A Hermes memory write is what an actual consolidation looks like from
+        # here -- its memory tool is the only thing that edits the store. This
+        # is the promptest moment a standing brief can be found no longer true
+        # and retired, instead of waiting for the next turn or session edge.
+        self._evaluate_if_due("memory_write")
 
     def on_session_end(self, messages: list[dict[str, Any]] | None = None) -> None:
         self._evaluate_if_due("session_end")
@@ -218,12 +224,18 @@ class OmhMemoryProvider(_MemoryProviderBase):
             if reading is not None
             else {}
         )
-        reasons = consolidation_reasons(
-            state,
-            headroom_chars=headroom,
-            duplicate_count=len(plan.get("duplicate_clusters", []) or []),
-            session_ending=trigger in _SESSION_ENDING_TRIGGERS,
-        )
+        # Two different questions, one evaluation. `reasons` (suppressed) asks
+        # "should a new brief fire now"; `standing` asks "is anything still
+        # true at all". A suppressed standing condition returns [] for the
+        # first while remaining true for the second, and only the second may
+        # decide retirement.
+        reason_kwargs = {
+            "headroom_chars": headroom,
+            "duplicate_count": len(plan.get("duplicate_clusters", []) or []),
+            "session_ending": trigger in _SESSION_ENDING_TRIGGERS,
+        }
+        reasons = consolidation_reasons(state, **reason_kwargs)
+        standing = consolidation_reasons(state, suppress=False, **reason_kwargs)
         handoff = build_consolidation_handoff(
             reasons,
             block_summaries=[block.to_summary() for block in read_memory_blocks(self._omh_home)],
@@ -231,6 +243,7 @@ class OmhMemoryProvider(_MemoryProviderBase):
             trigger=trigger,
             messages_at_risk=messages_at_risk,
             session_id=self._session_id,
+            raised_at=_utc_now(),
         )
         if reasons:
             self._write_handoff(handoff)
@@ -238,7 +251,34 @@ class OmhMemoryProvider(_MemoryProviderBase):
                 self._omh_home,
                 clear_after_consolidation(state, at=_utc_now(), reasons=reasons),
             )
+        elif not standing and trigger == "memory_write":
+            self._retire_stale_brief(trigger)
         return handoff
+
+    def _retire_stale_brief(self, trigger: str) -> None:
+        """Mark the on-disk brief not-due once consolidation was observed.
+
+        Nothing used to clear `consolidation.json`: it was written when
+        consolidation came due and never touched again, so the doctor warning
+        and every messenger's chat notice repeated forever -- including after
+        the user actually consolidated.
+
+        Retirement is gated on the `memory_write` trigger on purpose. A Hermes
+        memory write is what an actual consolidation looks like from here, and
+        it is the only observable signal of one. An empty standing set alone is
+        not enough: event reasons clear themselves the moment they fire -- the
+        turn counter resets -- so an interval-raised brief always looks
+        "no longer standing" one turn later, and retiring on that would erase
+        every notice before anyone could act on it.
+        """
+        brief = read_latest_consolidation(self._omh_home)
+        if not brief or not brief.get("due"):
+            return
+        retired = dict(brief)
+        retired["due"] = False
+        retired["superseded_at"] = _utc_now()
+        retired["superseded_by_trigger"] = trigger
+        self._write_handoff(retired)
 
     # -- Internals ----------------------------------------------------------
 

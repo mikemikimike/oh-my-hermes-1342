@@ -306,7 +306,7 @@ def _memory_consolidation_check(paths: OmhPaths) -> Check:
     reasons = [str(reason) for reason in brief.get("reasons", []) if isinstance(reason, str)]
     if not brief.get("due") or not reasons:
         return Check("memory_consolidation", True, "No memory consolidation is pending", observed=True)
-    at = str(read_dreaming_state(paths.omh_home).get("last_consolidated_at", "") or "unknown time")
+    at = str(brief.get("raised_at", "") or read_dreaming_state(paths.omh_home).get("last_consolidated_at", "") or "unknown time")
     return Check(
         "memory_consolidation",
         True,
