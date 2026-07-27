@@ -27,9 +27,29 @@ import hashlib
 import json
 
 from .input_language import SUPPORT_MODEL_SELECTION_REQUIRED
+from ..skills.catalog import routable_definitions
+from ..workflows.hermes_planning import is_coding_shaped_task
 
 
 CANDIDATE_HANDOFF_SCHEMA_VERSION = "model_selection_candidates/v1"
+
+# The workflows that actually deliver implementation work. Observed live: an
+# implementation-shaped request ("...백엔드 구현해줘") reached model selection
+# carrying instinct-ledger, materials-package, and memory-new at score 3 --
+# decomposed-token noise -- while the picker in the same session offered
+# idea-to-deploy and planning flows. The engines that do the work (ultraprocess,
+# team, ultragoal) never surfaced, because nothing connected "this is coding"
+# to "these are the coding candidates".
+CODING_LANE_CANDIDATES = (
+    ("ultraprocess", "prepare_coding_handoff"),
+    ("team", "prepare_coding_handoff"),
+    ("ultragoal", "prepare_goal_ledger"),
+    ("executor-runtime-readiness", "check_executor_readiness"),
+)
+
+# Matches the router's own specific-capability minimum: below this, a match is
+# decomposition noise, not a signal worth showing over the coding lane.
+CODING_LANE_SCORE_FLOOR = 6
 
 # Below this score gap the scorer is not discriminating between the top two
 # candidates, it is picking one arbitrarily. Measured ties (gap 0) and near-ties
@@ -76,6 +96,47 @@ def candidate_handoff_reasons(route: dict[str, object]) -> tuple[str, ...]:
     return tuple(reasons)
 
 
+def _coding_lane_applies(candidates: list[dict[str, object]], message: str) -> bool:
+    """Should the coding lane replace what scoring found?
+
+    Only when the message is implementation-shaped AND every scored candidate
+    is below the floor. A strong match -- memory-sync at 31, ultraprocess at a
+    real trigger score -- keeps its shortlist; the lane replaces noise, never
+    signal.
+    """
+    if not message or not is_coding_shaped_task(message):
+        return False
+    return all(int(candidate.get("score", 0) or 0) < CODING_LANE_SCORE_FLOOR for candidate in candidates)
+
+
+def _coding_lane() -> list[dict[str, object]]:
+    definitions = {definition.name: definition for definition in routable_definitions()}
+    lane: list[dict[str, object]] = []
+    for name, next_action in CODING_LANE_CANDIDATES:
+        definition = definitions.get(name)
+        if definition is None:
+            continue
+        lane.append(
+            {
+                "skill": definition.name,
+                "description": definition.description,
+                "why_it_matched": (
+                    "The request is implementation-shaped; this is one of the workflows that "
+                    "actually delivers coding work."
+                ),
+                "matched": ["coding_shaped_task"],
+                "score": 0,
+                "confidence": "low",
+                "next_action": next_action,
+                "evidence_boundary": (
+                    "A candidate is routing input only; nothing has been planned, dispatched, "
+                    "implemented, or verified."
+                ),
+            }
+        )
+    return lane[:MAX_CANDIDATES]
+
+
 def _candidate(recommendation: dict[str, object]) -> dict[str, object]:
     return {
         "skill": recommendation.get("skill"),
@@ -104,7 +165,7 @@ def candidate_handoff_digest(candidates: list[dict[str, object]], reasons: tuple
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def build_candidate_handoff(route: dict[str, object]) -> dict[str, object] | None:
+def build_candidate_handoff(route: dict[str, object], message: str = "") -> dict[str, object] | None:
     """Build the model-selection handoff, or None when the route is decidable."""
     reasons = candidate_handoff_reasons(route)
     if not reasons:
@@ -112,6 +173,10 @@ def build_candidate_handoff(route: dict[str, object]) -> dict[str, object] | Non
 
     recommendations = [item for item in route.get("recommendations", []) if isinstance(item, dict)]
     candidates = [_candidate(recommendation) for recommendation in recommendations[:MAX_CANDIDATES]]
+
+    if _coding_lane_applies(candidates, message):
+        candidates = _coding_lane()
+        reasons = (*reasons, "implementation_shaped_request")
 
     payload: dict[str, object] = {
         "schema_version": CANDIDATE_HANDOFF_SCHEMA_VERSION,
@@ -123,7 +188,13 @@ def build_candidate_handoff(route: dict[str, object]) -> dict[str, object] | Non
         "claim_boundary": CLAIM_BOUNDARY,
     }
 
-    if candidates:
+    if "implementation_shaped_request" in reasons:
+        payload["question"] = (
+            "The request is implementation-shaped but no workflow matched strongly. These are "
+            "the coding-delivery workflows; choose the one that fits the delivery grain, or ask "
+            "one clarifying question. Do not route implementation work to planning-only flows."
+        )
+    elif candidates:
         payload["question"] = (
             "Which of these workflows fits the request? Choose one, say why in one line, "
             "and carry its evidence boundary forward. If none fit, ask one clarifying question."

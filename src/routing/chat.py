@@ -1357,7 +1357,7 @@ def route_chat_message(
     route["input_language"] = routing_input_language(message)
     # An undecidable route carries its shortlist forward for model selection
     # instead of stopping at a picker or a bare fallback.
-    candidate_handoff = build_candidate_handoff(route)
+    candidate_handoff = build_candidate_handoff(route, message)
     if candidate_handoff:
         route["candidate_handoff"] = candidate_handoff
     return _apply_skill_governance(route, skill_policy)

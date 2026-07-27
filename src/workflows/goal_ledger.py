@@ -475,6 +475,28 @@ def build_goal_continuation(paths: OmhPaths, goal_id: str) -> dict[str, Any]:
     }
 
 
+def _checkpoint_id_short(checkpoint_id: str) -> str:
+    # The trailing token from _new_item_id (secrets.token_hex(3)) is short,
+    # stable, and unique enough to reference a checkpoint in a status line.
+    segment = checkpoint_id.rsplit("-", 1)[-1]
+    return segment or checkpoint_id[:8]
+
+
+def _checkpoint_lines(checkpoints: list[dict[str, Any]]) -> list[str]:
+    # Pre-rendered as dash lines, not left to the caller's judgment: a live
+    # Slack session once rendered this same data as a markdown table, which
+    # messenger surfaces (Slack, Telegram) silently drop. Handing back the
+    # exact lines to print removes that choice entirely.
+    lines = []
+    for checkpoint in checkpoints:
+        evidence = "observed" if checkpoint.get("evidence_refs") else "prepared"
+        lines.append(
+            f"- {_checkpoint_id_short(checkpoint['checkpoint_id'])}: "
+            f"{checkpoint['summary']} — {checkpoint['status']}, {evidence}"
+        )
+    return lines
+
+
 def build_goal_status_card(paths: OmhPaths, goal_id: str) -> dict[str, Any]:
     goal = read_goal_ledger(paths, goal_id)
     gate = build_goal_completion_gate(paths, goal_id)
@@ -492,6 +514,11 @@ def build_goal_status_card(paths: OmhPaths, goal_id: str) -> dict[str, Any]:
         "allowed_actions": _allowed_goal_actions(gate),
         "safe_copy": _goal_safe_copy(goal, gate, progress),
         "completion_gate": gate,
+        "checkpoint_lines": _checkpoint_lines(goal["checkpoints"]),
+        "render_guidance": (
+            "Render checkpoints as the provided dash lines, one per line. "
+            "Never render a markdown table: messenger surfaces (Slack, Telegram) drop tables."
+        ),
     }
 
 
@@ -607,6 +634,9 @@ def _goal_safe_copy(goal: dict[str, Any], gate: dict[str, Any], progress: dict[s
         "headline": f"Goal {goal['goal_id']} is {goal['status']}.",
         "progress": f"{progress['required_satisfied']}/{progress['required_total']} required criteria satisfied.",
         "next_step": next_step,
+        # A live Slack session rendered checkpoints as a markdown table, which
+        # messenger surfaces drop; this hint steers callers back to bullets.
+        "checkpoint_format": "- cpN: summary — status, evidence",
     }
 
 

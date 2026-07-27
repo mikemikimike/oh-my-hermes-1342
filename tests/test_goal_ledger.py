@@ -264,5 +264,64 @@ class GoalLedgerTests(unittest.TestCase):
         self.assertIn("objective_storage must be sha256", validation["errors"])
 
 
+class GoalStatusCardCheckpointRenderingTests(unittest.TestCase):
+    # A live Slack session once rendered goal checkpoints as a markdown
+    # table (| ID | 이름 | 상태 | 증거 |), which messenger surfaces (Slack,
+    # Telegram) silently drop. These tests pin the fix: the status card
+    # pre-renders dash lines and tells the caller never to use a table.
+    def test_checkpoint_lines_are_pre_rendered_dash_bullets(self) -> None:
+        with TemporaryDirectory() as tmp:
+            paths = resolve_paths(Path(tmp) / ".omh", Path(tmp) / ".hermes")
+            create_goal_ledger(
+                paths,
+                "Finish the durable goal",
+                ["Criterion one"],
+                goal_id="goal-checkpoint-lines",
+            )
+            record_goal_checkpoint(paths, "goal-checkpoint-lines", "Wrote the ledger module", evidence_refs=["unit"])
+            record_goal_checkpoint(paths, "goal-checkpoint-lines", "Drafted the design notes")
+
+            status_card = build_goal_status_card(paths, "goal-checkpoint-lines")
+            lines = status_card["checkpoint_lines"]
+
+            self.assertEqual(len(lines), 2)
+            self.assertRegex(lines[0], r"^- [0-9a-f]+: Wrote the ledger module — done, observed$")
+            self.assertRegex(lines[1], r"^- [0-9a-f]+: Drafted the design notes — done, prepared$")
+            self.assertIn("Never render a markdown table", status_card["render_guidance"])
+            self.assertIn("messenger surfaces", status_card["render_guidance"])
+
+    def test_checkpoint_lines_is_empty_list_not_missing_key_when_no_checkpoints(self) -> None:
+        with TemporaryDirectory() as tmp:
+            paths = resolve_paths(Path(tmp) / ".omh", Path(tmp) / ".hermes")
+            create_goal_ledger(
+                paths,
+                "Finish the durable goal",
+                ["Criterion one"],
+                goal_id="goal-no-checkpoints",
+            )
+
+            status_card = build_goal_status_card(paths, "goal-no-checkpoints")
+
+            self.assertIn("checkpoint_lines", status_card)
+            self.assertEqual(status_card["checkpoint_lines"], [])
+
+    def test_safe_copy_carries_checkpoint_format_hint(self) -> None:
+        with TemporaryDirectory() as tmp:
+            paths = resolve_paths(Path(tmp) / ".omh", Path(tmp) / ".hermes")
+            create_goal_ledger(
+                paths,
+                "Finish the durable goal",
+                ["Criterion one"],
+                goal_id="goal-format-hint",
+            )
+
+            status_card = build_goal_status_card(paths, "goal-format-hint")
+
+            self.assertEqual(
+                status_card["safe_copy"]["checkpoint_format"],
+                "- cpN: summary — status, evidence",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

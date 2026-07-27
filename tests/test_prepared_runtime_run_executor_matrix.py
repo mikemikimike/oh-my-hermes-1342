@@ -8,7 +8,14 @@ from tempfile import TemporaryDirectory
 from _local_package import load_local_package
 
 load_local_package()
-from omh.coding_delegation import build_coding_delegation_payload, coding_delegation_record_payload
+from omh.coding_delegation import (
+    APPROVAL_EVIDENCE_RULE,
+    EXECUTOR_IDENTITY_RULE,
+    MODEL_NAMING_RULE,
+    READINESS_EVIDENCE_RULE,
+    build_coding_delegation_payload,
+    coding_delegation_record_payload,
+)
 from omh.executors import (
     CODING_EXECUTOR_HANDOFF_TARGETS,
     CODING_RUNTIME_HANDOFF_TARGETS,
@@ -203,6 +210,44 @@ class PreparedRuntimeRunExecutorMatrixTests(unittest.TestCase):
             self.assertEqual(coding["executor_handoff"]["status"], "prepared_not_observed")
             self.assertFalse((run_dir / "delegation.json").exists())
             self.assertFalse((run_dir / "wrapper.json").exists())
+
+
+class CodingDelegationGuidanceRulesTests(unittest.TestCase):
+    """Pin the shared guardrail fields added after one live Slack session went wrong three ways in a
+    row, plus a fourth failure caught the same session: a compaction resume was read as approval, status
+    copy never named which executor/model ran, a retry suggestion invented a model name from memory, and
+    `which codex` plus an auth file on disk were read as "ready" for a run that then failed. The fields
+    must live once on the shared payload (not copied per executor-target handoff builder) so every
+    executor target carries the identical guardrail text."""
+
+    def test_all_four_rules_are_present_on_every_executor_targets_payload(self) -> None:
+        for profile in EXECUTOR_PROFILES:
+            with self.subTest(profile=profile):
+                payload = build_coding_delegation_payload(MESSAGE, source="discord", executor_target=profile)
+
+                self.assertEqual(payload["approval_evidence_rule"], APPROVAL_EVIDENCE_RULE)
+                self.assertEqual(payload["executor_identity_rule"], EXECUTOR_IDENTITY_RULE)
+                self.assertEqual(payload["model_naming_rule"], MODEL_NAMING_RULE)
+                self.assertEqual(payload["readiness_evidence_rule"], READINESS_EVIDENCE_RULE)
+
+    def test_approval_evidence_rule_names_compaction_as_never_approval(self) -> None:
+        self.assertIn("compaction", APPROVAL_EVIDENCE_RULE)
+        self.assertIn("is never approval", APPROVAL_EVIDENCE_RULE)
+
+    def test_model_naming_rule_forbids_naming_a_model_from_memory(self) -> None:
+        self.assertIn("Never name a concrete model from memory", MODEL_NAMING_RULE)
+
+    def test_readiness_evidence_rule_rejects_path_and_auth_file_as_run_evidence(self) -> None:
+        self.assertIn("PATH", READINESS_EVIDENCE_RULE)
+        self.assertIn("auth file", READINESS_EVIDENCE_RULE)
+        self.assertIn("are not run evidence", READINESS_EVIDENCE_RULE)
+
+    def test_approval_rule_in_session_observation_contracts_names_compaction(self) -> None:
+        codex_handoff = build_coding_delegation_payload(MESSAGE, source="discord", executor_target="codex")["executor_handoff"]
+        claude_code_handoff = build_coding_delegation_payload(MESSAGE, source="discord", executor_target="claude-code")["prompt_handoff"]
+
+        self.assertIn("compaction", codex_handoff["session_observation_contract"]["approval_rule"])
+        self.assertIn("compaction", claude_code_handoff["session_observation_contract"]["approval_rule"])
 
 
 def _prepare_linked_codex_session(paths) -> tuple[str, str]:

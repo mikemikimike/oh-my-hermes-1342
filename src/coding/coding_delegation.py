@@ -76,6 +76,32 @@ SCHEMA_VERSION = "coding_delegation/v1"
 DELEGATION_ACTIONS = ("delegate", "clarify", "fallback")
 MESSAGE_CONTEXT_SCHEMA_VERSION = "coding_delegation_message_context/v1"
 MESSAGE_CONTEXT_MODES = ("full", "bounded")
+# Four rules pinned from one live Slack session where a chat wrapper went wrong in front of a user:
+# (a) after a context compaction it said "승인 받았어" (I received approval) and dispatched to Codex —
+#     no approving user message existed, the compaction resume was mistaken for approval;
+# (b) its status copy never named which executor/model actually ran, so nobody could tell;
+# (c) it proposed retrying "with a working model (gpt-5.1-codex 등)", inventing a model name from stale
+#     memory; and (d) it read `which codex` plus an existing ~/.codex/auth.json as "Codex ready", dispatched,
+#     and the run then failed — a binary on PATH and an auth file are not run evidence.
+# These travel on the shared payload (not copied into each per-target handoff builder) so every executor
+# target — codex, claude-code, hermes, generic, or a future one — carries the same guardrail text.
+APPROVAL_EVIDENCE_RULE = (
+    "Approval is a quoted user message visible in the current context. A compaction or session resume "
+    "is never approval. If the approving message is not visible after compaction, re-ask before dispatching."
+)
+EXECUTOR_IDENTITY_RULE = (
+    "State the executor and model exactly as configured or observed (e.g. from the runtime record or CLI "
+    "config), in parentheses after status lines. If the model is not observed, say the model is unconfirmed."
+)
+MODEL_NAMING_RULE = (
+    "Never name a concrete model from memory. Model names come only from observed config, runtime records, "
+    "or the executor CLI's own output; otherwise ask or say unknown."
+)
+READINESS_EVIDENCE_RULE = (
+    "A binary on PATH and an auth file are not run evidence. Before claiming an executor is ready, observe "
+    "it execute — a --version or no-op invocation — and read its configured model from its own config or "
+    "output. Readiness claimed from file existence alone must be labeled prepared, not observed."
+)
 _CATALOG_INTENT_RETAINED_WORKFLOWS = set(catalog_intent_delegation_skill_names())
 _RETAINED_HERMES_WORKFLOWS = set(retained_delegation_skill_names())
 _LOCAL_CAPABILITY_STRATEGY_SCHEMA_VERSION = "executor_local_capability_strategy/v1"
@@ -317,6 +343,10 @@ def build_coding_delegation_payload(
         "source": source,
         "delegation": delegation.to_dict(),
         "recommendations": recommendations,
+        "approval_evidence_rule": APPROVAL_EVIDENCE_RULE,
+        "executor_identity_rule": EXECUTOR_IDENTITY_RULE,
+        "model_naming_rule": MODEL_NAMING_RULE,
+        "readiness_evidence_rule": READINESS_EVIDENCE_RULE,
     }
     selection = executor_selection_for_target(executor_target, action=delegation.action)
     isolation_plan = (
@@ -1214,7 +1244,8 @@ def _codex_session_observation_contract() -> dict[str, object]:
         ),
         "approval_rule": (
             "Approval or user-input waits are blockers until an explicit observed approval, rejection, or input "
-            "is recorded; never auto-approve from a prepared handoff."
+            "is recorded; never auto-approve from a prepared handoff. A compaction or session resume is never "
+            "that observed approval."
         ),
         "event_filter_rule": "Observe only events for the matching thread and turn identifiers.",
         "observed_state_owner": [
@@ -1260,7 +1291,8 @@ def _claude_code_session_observation_contract() -> dict[str, object]:
         ),
         "approval_rule": (
             "Approval or user-input waits are blockers until an explicit observed approval, rejection, or input "
-            "is recorded; never auto-approve from a prepared handoff."
+            "is recorded; never auto-approve from a prepared handoff. A compaction or session resume is never "
+            "that observed approval."
         ),
         "event_filter_rule": "Observe only events for the matching Claude Code session and turn identifiers.",
         "observed_state_owner": [

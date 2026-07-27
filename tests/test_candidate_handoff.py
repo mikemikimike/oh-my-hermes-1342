@@ -97,5 +97,55 @@ class CandidateHandoffTests(unittest.TestCase):
         self.assertIn("not a routing decision", route["candidate_handoff"]["claim_boundary"])
 
 
+class CodingLaneTests(unittest.TestCase):
+    """An implementation-shaped request gets the coding lane, not scorer noise.
+
+    Observed live: "...백엔드 구현해줘" reached model selection carrying
+    instinct-ledger, materials-package, and memory-new at score 3 -- decomposed
+    -token noise -- while the engines that deliver coding work (ultraprocess,
+    team, ultragoal) never surfaced. The same session's picker offered
+    idea-to-deploy and planning flows for what was an implementation ask.
+    """
+
+    LANE = ["ultraprocess", "team", "ultragoal", "executor-runtime-readiness"]
+
+    def _handoff(self, message: str) -> dict:
+        from omh.routing.chat import route_chat_message
+
+        return route_chat_message(message, source="slack").get("candidate_handoff") or {}
+
+    def test_the_observed_failure_now_yields_the_coding_lane(self) -> None:
+        handoff = self._handoff(
+            "document-harness에서 프로젝트 링크만 주면 observer 결과를 자동 조회하게 백엔드 구현해줘"
+        )
+        self.assertEqual([c["skill"] for c in handoff["candidates"]], self.LANE)
+        self.assertIn("implementation_shaped_request", handoff["reasons"])
+        self.assertIn("Do not route implementation work to planning-only flows", handoff["question"])
+
+    def test_english_implementation_asks_get_the_same_lane(self) -> None:
+        handoff = self._handoff("implement the backend for observer lookup")
+        self.assertEqual([c["skill"] for c in handoff["candidates"]], self.LANE)
+
+    def test_a_strong_match_keeps_its_own_shortlist(self) -> None:
+        # The lane replaces noise, never signal: a real trigger match must not
+        # be displaced by generic coding candidates.
+        from omh.routing.chat import route_chat_message
+
+        route = route_chat_message("기억이 잘못 저장된 것 같아 확인해줘", source="slack")
+        self.assertEqual(route["action"], "dispatch")
+        self.assertNotIn("candidate_handoff", route)
+
+    def test_non_coding_weak_requests_do_not_get_the_lane(self) -> None:
+        handoff = self._handoff("점심 뭐 먹을까 추천해줘")
+        skills = [c["skill"] for c in handoff.get("candidates", [])]
+        self.assertNotEqual(skills, self.LANE)
+        self.assertNotIn("implementation_shaped_request", handoff.get("reasons", []))
+
+    def test_lane_candidates_carry_the_routing_only_boundary(self) -> None:
+        handoff = self._handoff("implement the backend for observer lookup")
+        for candidate in handoff["candidates"]:
+            self.assertIn("routing input only", candidate["evidence_boundary"])
+
+
 if __name__ == "__main__":
     unittest.main()
