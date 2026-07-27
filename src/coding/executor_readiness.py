@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from ..executors import EXECUTOR_PROFILES, executor_label
@@ -13,6 +15,26 @@ from ..paths import OmhPaths
 EXECUTOR_READINESS_SCHEMA_VERSION = "executor_readiness/v1"
 EXECUTOR_READINESS_PROFILES = EXECUTOR_PROFILES
 _PROBE_TIMEOUT_SECONDS = 3
+
+# How many PATH resolutions of one command get their version observed. Users
+# update codex and claude on their own cadence and by more than one installer
+# (npm, standalone, brew), so several binaries of different versions routinely
+# coexist; two or three is the realistic ceiling worth the subprocess cost.
+_MAX_OBSERVED_RESOLUTIONS = 3
+
+# OMH pins no executor version, ever -- a guard test rejects any version
+# literal in this module, including comments. The observed failure that
+# motivates the shadow report was not "the version was wrong": `shutil.which`
+# returns only the FIRST match, so a stale npm codex probed "ready" while the
+# newer standalone the auth session actually required sat one PATH entry
+# later, invisible. Version requirements belong to the executor CLI's own
+# output at run time; OMH's job is to observe every resolution and say when
+# the one that will run is not the only one installed.
+EXECUTOR_VERSION_POLICY = (
+    "OMH pins no executor CLI version. Version requirements come from the executor's own "
+    "output at run time; the probe reports every PATH resolution it observed so a stale "
+    "binary shadowing a newer install is visible instead of silently selected."
+)
 _COMMANDS: dict[str, tuple[str, tuple[str, ...]]] = {
     "codex": ("codex", ("--version",)),
     "claude-code": ("claude", ("--version",)),
@@ -183,6 +205,56 @@ def _with_advisory_signals(paths: OmhPaths, profile: str, result: dict[str, obje
     return result
 
 
+def _path_resolutions(command: str) -> list[str]:
+    """Every distinct binary this command resolves to, in PATH order.
+
+    `shutil.which` answers "what will run"; this answers "what else could".
+    Deduplicated by real path so a symlink chain to the same binary does not
+    read as a conflict.
+    """
+    resolutions: list[str] = []
+    seen: set[str] = set()
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        candidate = Path(directory) / command
+        try:
+            if not candidate.is_file() or not os.access(candidate, os.X_OK):
+                continue
+            real = str(candidate.resolve())
+        except OSError:
+            continue
+        if real in seen:
+            continue
+        seen.add(real)
+        resolutions.append(str(candidate))
+    return resolutions
+
+
+def _observed_version(binary: str, args: list[str]) -> str:
+    """The binary's own version line, or the failure it printed instead."""
+    try:
+        completed = subprocess.run(
+            [binary, *args],
+            text=True,
+            capture_output=True,
+            timeout=_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"probe failed: {exc}"[:200]
+    output = (completed.stdout or completed.stderr or "").strip().splitlines()
+    return output[0][:200] if output else f"exited with {completed.returncode}"
+
+
+def _resolution_report(command: str, args: list[str]) -> list[dict[str, str]]:
+    """One row per distinct PATH resolution, each with its observed version."""
+    return [
+        {"path": path, "observed_version": _observed_version(path, args)}
+        for path in _path_resolutions(command)[:_MAX_OBSERVED_RESOLUTIONS]
+    ]
+
+
 def _run_probe(contract: dict[str, object]) -> dict[str, object]:
     result = dict(contract)
     probe = result.get("probe")
@@ -234,6 +306,15 @@ def _run_probe(contract: dict[str, object]) -> dict[str, object]:
         )
         return result
     output = (completed.stdout or completed.stderr or "").strip().splitlines()
+    summary = output[0][:200] if output else f"`{command}` exited with {completed.returncode}."
+    resolutions = _resolution_report(command, args)
+    versions = {row["observed_version"] for row in resolutions}
+    shadowed = len(resolutions) > 1 and len(versions) > 1
+    if shadowed:
+        others = "; ".join(
+            f"{row['path']} ({row['observed_version']})" for row in resolutions[1:]
+        )
+        summary = f"{summary} — PATH also resolves: {others}"[:400]
     result.update(
         {
             "status": "ready" if completed.returncode == 0 else "blocked",
@@ -241,7 +322,14 @@ def _run_probe(contract: dict[str, object]) -> dict[str, object]:
             "observed_once": True,
             "exit_code": completed.returncode,
             "command_path": resolved,
-            "summary": output[0][:200] if output else f"`{command}` exited with {completed.returncode}.",
+            "path_resolutions": resolutions,
+            # Shadowed means: more than one distinct binary, with differing
+            # observed versions. The first is what will run and status reflects
+            # it honestly; the flag exists so a stale binary hiding a newer
+            # install is a stated fact, not a mid-dispatch surprise.
+            "shadowed": shadowed,
+            "version_policy": EXECUTOR_VERSION_POLICY,
+            "summary": summary,
             "next_action": _ready_action(str(result.get("profile", ""))) if completed.returncode == 0 else "choose_executor_or_configure_path",
         }
     )
