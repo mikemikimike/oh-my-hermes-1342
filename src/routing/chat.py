@@ -1351,6 +1351,27 @@ def route_chat_message(
     if min_confidence not in CONFIDENCE_LEVELS:
         raise ValueError(f"unsupported chat route confidence threshold: {min_confidence}")
 
+    return _enriched_route(message, source, limit, min_confidence, skill_policy=skill_policy)
+
+
+def _enriched_route(
+    message: str,
+    source: str,
+    limit: int,
+    min_confidence: str,
+    *,
+    skill_policy: dict[str, object] | None,
+) -> dict[str, object]:
+    """The cached decision plus everything every consumer must see.
+
+    Both public entries route through here on purpose. The public payload path
+    used to call `_route_chat_message_cached` directly, skipping this block --
+    so the wrapper contract, and therefore every messenger behind the
+    `omh_interact` tool, never received `input_language`, the model-selection
+    `candidate_handoff`, or skill governance. The candidate-handoff feature was
+    invisible on the one surface it was built for, found when a mocked Slack QA
+    pass compared the tool payload against a direct router call.
+    """
     route = _clone_jsonish(_route_chat_message_cached(message, source, limit, min_confidence))
     # Attach the input script here rather than at each ChatRouteDecision site so
     # every route -- fast path, catalog path, and full scoring -- reports it.
@@ -1751,7 +1772,7 @@ def _public_chat_route_payload_cached(
     include_message: bool,
 ) -> dict[str, object]:
     return public_route_payload(
-        _route_chat_message_cached(message, source, limit, min_confidence),
+        _enriched_route(message, source, limit, min_confidence, skill_policy=None),
         include_message=include_message,
     )
 

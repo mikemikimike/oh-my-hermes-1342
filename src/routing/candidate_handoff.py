@@ -24,7 +24,6 @@ candidate set and the same digest, so a routing decision remains auditable.
 from __future__ import annotations
 
 import hashlib
-import json
 
 from .input_language import SUPPORT_MODEL_SELECTION_REQUIRED
 from ..skills.catalog import routable_definitions
@@ -156,12 +155,18 @@ def candidate_handoff_digest(candidates: list[dict[str, object]], reasons: tuple
     Keyed on the candidate skills and the reasons, not on scores, so the digest
     survives score tuning while still changing when the shortlist changes.
     """
-    identity = {
-        "schema_version": CANDIDATE_HANDOFF_SCHEMA_VERSION,
-        "reasons": list(reasons),
-        "skills": [candidate.get("skill") for candidate in candidates],
-    }
-    encoded = json.dumps(identity, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    # Joined fields, not json.dumps: this now runs inside the public payload
+    # path, and the efficiency contract forbids JSON serialization during the
+    # quality demos that walk every routing case. The identity content is
+    # unchanged -- schema version, reasons, skills, in order -- and the unit
+    # separator cannot occur in any of them.
+    encoded = "\x1f".join(
+        [
+            CANDIDATE_HANDOFF_SCHEMA_VERSION,
+            *[str(reason) for reason in reasons],
+            *[str(candidate.get("skill")) for candidate in candidates],
+        ]
+    )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 

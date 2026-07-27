@@ -147,5 +147,61 @@ class CodingLaneTests(unittest.TestCase):
             self.assertIn("routing input only", candidate["evidence_boundary"])
 
 
+class WrapperPathParityTests(unittest.TestCase):
+    """The messenger path sees the same enriched route as a direct call.
+
+    Found by a mocked Slack QA pass: `_public_chat_route_payload_cached` called
+    the raw cached decision directly, so the wrapper contract -- and therefore
+    every messenger behind `omh_interact` -- never received `input_language`,
+    the model-selection `candidate_handoff`, or skill governance. The
+    candidate-handoff feature was invisible on the one surface it was built
+    for.
+    """
+
+    MESSAGE = "document-harness에서 프로젝트 링크만 주면 observer 결과를 자동 조회하게 백엔드 구현해줘"
+
+    def test_the_public_payload_carries_the_handoff_and_language(self) -> None:
+        from omh.routing.chat import public_chat_route_payload
+
+        route = public_chat_route_payload(self.MESSAGE, source="slack")
+        handoff = route.get("candidate_handoff") or {}
+        self.assertEqual(
+            [candidate["skill"] for candidate in handoff.get("candidates", [])],
+            ["ultraprocess", "team", "ultragoal", "executor-runtime-readiness"],
+        )
+        self.assertIn("input_language", route)
+
+    def test_the_real_plugin_tool_route_matches_the_direct_route(self) -> None:
+        import json as jsonlib
+        import os
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        from omh.plugin_bundle.omh.tools.chat_tool import omh_interact_handler
+        from omh.routing.chat import route_chat_message
+
+        direct = route_chat_message(self.MESSAGE, source="slack")
+        direct_lane = [c["skill"] for c in (direct.get("candidate_handoff") or {}).get("candidates", [])]
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            with patch.dict(os.environ, {"OMH_HOME": str(root / ".omh"), "HERMES_HOME": str(root / ".hermes")}):
+                out = jsonlib.loads(
+                    omh_interact_handler(
+                        {
+                            "message": self.MESSAGE,
+                            "source": "slack",
+                            "record_session": False,
+                            "omh_home": str(root / ".omh"),
+                            "hermes_home": str(root / ".hermes"),
+                        }
+                    )
+                )
+        tool_route = out.get("route") or {}
+        tool_lane = [c["skill"] for c in (tool_route.get("candidate_handoff") or {}).get("candidates", [])]
+        self.assertEqual(tool_lane, direct_lane)
+        self.assertIn("input_language", tool_route)
+
+
 if __name__ == "__main__":
     unittest.main()

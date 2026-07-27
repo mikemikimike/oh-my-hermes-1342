@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import hashlib
-import json
 from typing import Final, TypeAlias
 
 from .evidence_records import resolve_omh_record_ref
@@ -198,12 +197,21 @@ def policy_decision_identity(
 def policy_decision_digest(
     selected_policy: Mapping[str, object], *, executor: object = None, source: object = None
 ) -> str:
-    payload = json.dumps(
-        policy_decision_identity(selected_policy, executor=executor, source=source),
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    # Stable recursive encoding, not json.dumps: governance now runs on the
+    # public payload path -- the wrapper had been skipping it entirely -- and
+    # the efficiency contract forbids JSON serialization inside the quality
+    # demos that walk every routing case. Sorted keys keep the digest
+    # order-independent, exactly as sort_keys did.
+    payload = _stable_encode(policy_decision_identity(selected_policy, executor=executor, source=source))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _stable_encode(value: object) -> str:
+    if isinstance(value, Mapping):
+        return "{" + "\x1f".join(f"{key}\x1e{_stable_encode(value[key])}" for key in sorted(value)) + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + "\x1f".join(_stable_encode(item) for item in value) + "]"
+    return f"{type(value).__name__}:{value}"
 
 
 def _is_sha256(value: object) -> bool:
