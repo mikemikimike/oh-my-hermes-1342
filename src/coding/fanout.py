@@ -13,6 +13,7 @@ from .fanout_contracts import (
     FanoutContractError,
     PREPARED_NOT_OBSERVED,
 )
+from .model_routing import model_route_for_unit
 
 _UNIT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
@@ -172,6 +173,9 @@ def _normalized_unit(unit: Mapping[str, object], index: int) -> dict[str, object
         "owner": str(owner) if owner is not None and str(owner).strip() else None,
         "file_scope": sorted(set(file_scope)),
         "depends_on": sorted(set(depends_on)),
+        "model": str(unit.get("model", "") or "").strip(),
+        "reasoning_effort": str(unit.get("reasoning_effort", "") or "").strip(),
+        "role": str(unit.get("role", "") or "").strip(),
     }
 
 
@@ -187,6 +191,20 @@ def _sibling_scopes(units: Sequence[Mapping[str, object]], unit_id: str) -> list
 def _contract_unit(unit: Mapping[str, object], *, sibling_scopes: list[str], fanout_id: str) -> dict[str, object]:
     unit_id = str(unit["unit_id"])
     own_scope = set(str(path) for path in unit.get("file_scope", []))
+    executor_target = str(unit.get("owner")) if unit.get("owner") else "choose"
+    model_route = model_route_for_unit(unit, executor_target)
+    handoff: dict[str, object] = {
+        "schema_version": "fanout_unit_handoff/v1",
+        "executor_target": executor_target,
+        "dispatch_policy": "prepare_only",
+        "status": PREPARED_NOT_OBSERVED,
+        "claim_boundary": (
+            "This per-unit handoff is prepared guidance only; record observed evidence on a run named by "
+            "run_ref before any dispatch, verification, review, CI, or merge claim."
+        ),
+    }
+    if model_route is not None:
+        handoff["model_route"] = model_route
     return {
         "unit_id": unit_id,
         "title": str(unit.get("title") or unit_id),
@@ -198,16 +216,7 @@ def _contract_unit(unit: Mapping[str, object], *, sibling_scopes: list[str], fan
         "branch_suggestion": f"agent/{unit_id}",
         "depends_on": list(unit.get("depends_on", [])),
         "run_ref": f"{fanout_id}-{unit_id}",
-        "handoff": {
-            "schema_version": "fanout_unit_handoff/v1",
-            "executor_target": str(unit.get("owner")) if unit.get("owner") else "choose",
-            "dispatch_policy": "prepare_only",
-            "status": PREPARED_NOT_OBSERVED,
-            "claim_boundary": (
-                "This per-unit handoff is prepared guidance only; record observed evidence on a run named by "
-                "run_ref before any dispatch, verification, review, CI, or merge claim."
-            ),
-        },
+        "handoff": handoff,
         "integration_checks": [
             "unit tests covering the unit's file_scope pass",
             "no edits outside boundary.file_scope",

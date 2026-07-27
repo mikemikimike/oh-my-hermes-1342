@@ -657,6 +657,8 @@ Runtime artifacts are local JSON/JSONL files under `.omh/runtime/`.
   targets.json
   runtime/
     state.json
+    executor-readiness.json
+    executor-limit-signals.json
     runs/
       <run-id>/
         run.json
@@ -671,6 +673,11 @@ Runtime artifacts are local JSON/JSONL files under `.omh/runtime/`.
         session.json
         events.jsonl
 ```
+
+`executor-limit-signals.json` keeps, per executor profile, the last observed
+limit-shaped dispatch failure (timestamp, run ref, pattern label only — never
+matched text). It is advisory ranking metadata for executor choice, not
+provider quota truth.
 
 `targets.json` records observed Hermes target topology for setup drift, including
 single-to-multi and multi-to-single changes. `state.json` records install,

@@ -3,9 +3,11 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import subprocess
+import time
 from typing import Any, Callable, Mapping, Sequence
 
 from ..runtime.artifacts import append_journal_observation, create_run, show_run
+from ..system.local_store import atomic_write_json, locked_json_update, utc_now
 from ..system.paths import OmhPaths
 from .executor_readiness import probe_executor_readiness
 from .fanout_contracts import FANOUT_CLAIM_BOUNDARY
@@ -14,6 +16,25 @@ FANOUT_DISPATCH_SCHEMA_VERSION = "fanout_dispatch_summary/v1"
 DISPATCH_CLAIM_BOUNDARY = (
     "A dispatch summary records observed local subprocess activity only. It is not verification, review, CI, "
     "merge-readiness, or merge evidence, and omh never merges unit branches itself."
+)
+EXECUTOR_LIMIT_SIGNALS_SCHEMA_VERSION = "executor_limit_signals/v1"
+EXECUTOR_LIMIT_SIGNALS_CLAIM_BOUNDARY = (
+    "A limit signal records that one observed local dispatch failure matched a rate/usage-limit shape. "
+    "It is not provider quota truth, not an entitlement statement, and it expires as evidence the moment "
+    "the provider state changes."
+)
+
+# Deterministic limit-shape patterns, matched case-insensitively over the
+# in-memory stdout/stderr tails of a FAILED spawn only. Only the boolean and
+# the matched label are persisted — never the matched text itself.
+_LIMIT_SHAPED_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("rate_limit", "rate limit"),
+    ("usage_limit", "usage limit"),
+    ("quota", "quota"),
+    ("http_429", "429"),
+    ("credit", "insufficient credit"),
+    ("credit", "out of credits"),
+    ("limit_reached", "limit reached"),
 )
 
 # Spawnability is a data property: profiles listed here have a local headless
@@ -34,6 +55,52 @@ DISPATCH_COMMAND_TEMPLATES: dict[str, tuple[str, ...]] = {
         "Bash(git add:*),Bash(git commit:*)",
     ),
 }
+
+# Model routing is prepared metadata on the unit handoff; these fragments turn
+# it into argv only at dispatch time. Codex takes options before the prompt
+# positional; claude accepts them anywhere, so they append after the pinned
+# base argv to keep the no-route argv byte-identical to the template.
+DISPATCH_MODEL_OPTION_TEMPLATES: dict[str, tuple[str, ...]] = {
+    "codex": ("--model", "{model}"),
+    "claude-code": ("--model", "{model}"),
+}
+DISPATCH_REASONING_OPTION_TEMPLATES: dict[str, tuple[str, ...]] = {
+    # `-c` values parse as TOML with a raw-string fallback, so a bare effort
+    # level is accepted verbatim (verified against `codex exec --help`).
+    "codex": ("--config", "model_reasoning_effort={effort}"),
+    "claude-code": ("--effort", "{effort}"),
+}
+_DISPATCH_OPTION_INSERT_INDEX: dict[str, int | None] = {"codex": 2, "claude-code": None}
+
+
+def build_dispatch_argv(
+    owner: str,
+    prompt: str,
+    model_route: Mapping[str, Any] | None = None,
+) -> list[str] | None:
+    """Return the spawn argv for one owner, or None when the owner has no template.
+
+    Without a model route the argv is byte-identical to the base template; a
+    routed model/effort inserts the per-owner option fragments only.
+    """
+    template = DISPATCH_COMMAND_TEMPLATES.get(owner)
+    if template is None:
+        return None
+    argv = [part.replace("{prompt}", prompt) for part in template]
+    route = model_route or {}
+    options: list[str] = []
+    model = str(route.get("selected_model", "") or "")
+    effort = str(route.get("selected_reasoning_effort", "") or "")
+    if model:
+        options.extend(part.replace("{model}", model) for part in DISPATCH_MODEL_OPTION_TEMPLATES.get(owner, ()))
+    if effort:
+        options.extend(part.replace("{effort}", effort) for part in DISPATCH_REASONING_OPTION_TEMPLATES.get(owner, ()))
+    if not options:
+        return argv
+    insert_at = _DISPATCH_OPTION_INSERT_INDEX.get(owner)
+    if insert_at is None:
+        return argv + options
+    return argv[:insert_at] + options + argv[insert_at:]
 
 
 def build_unit_prompt(unit: Mapping[str, Any], goal_text: str) -> str:
@@ -147,10 +214,11 @@ def dispatch_fanout(
                 pending.remove(unit_id)
 
     summary_units = [results[unit_id] for unit_id in order]
-    return {
+    summary = {
         "schema_version": FANOUT_DISPATCH_SCHEMA_VERSION,
         "fanout_id": contract.get("fanout_id", ""),
         "dry_run": dry_run,
+        "observed_at": utc_now(),
         "merge_order": order,
         "units": summary_units,
         "merge_ready_units": [entry["unit_id"] for entry in summary_units if entry.get("merge_ready")],
@@ -162,6 +230,12 @@ def dispatch_fanout(
         "base_sha": base_sha,
         "claim_boundary": f"{DISPATCH_CLAIM_BOUNDARY} {FANOUT_CLAIM_BOUNDARY}",
     }
+    fanout_id = str(contract.get("fanout_id", "") or "")
+    if not dry_run and fanout_id:
+        # Latest-wins metadata-only persistence so `omh coding fanout brief`
+        # can join observed telemetry without replaying the journal.
+        atomic_write_json(paths.fanout_dispatch_summary_path(fanout_id), summary, private=True)
+    return summary
 
 
 def _dispatch_unit(
@@ -178,9 +252,11 @@ def _dispatch_unit(
 ) -> dict[str, Any]:
     unit_id = str(unit["unit_id"])
     run_ref = str(unit.get("run_ref", unit_id))
-    owner = str(unit.get("handoff", {}).get("executor_target", "choose"))
-    template = DISPATCH_COMMAND_TEMPLATES.get(owner)
-    if template is None:
+    handoff = unit.get("handoff", {}) if isinstance(unit.get("handoff"), Mapping) else {}
+    owner = str(handoff.get("executor_target", "choose"))
+    model_route = handoff.get("model_route") if isinstance(handoff.get("model_route"), Mapping) else None
+    routed_model = str(model_route.get("selected_model", "") or "") if model_route else ""
+    if DISPATCH_COMMAND_TEMPLATES.get(owner) is None:
         return {
             "unit_id": unit_id,
             "run_ref": run_ref,
@@ -200,13 +276,14 @@ def _dispatch_unit(
             "merge_ready": False,
         }
     prompt = build_unit_prompt(unit, goal_text)
-    argv = [part.replace("{prompt}", prompt) for part in template]
+    argv = build_dispatch_argv(owner, prompt, model_route)
     worktree = _worktree_path(repo_root, unit_id)
     if dry_run:
         return {
             "unit_id": unit_id,
             "run_ref": run_ref,
             "owner": owner,
+            "model": routed_model,
             "status": "dry_run_planned",
             "planned_argv": [part if part != prompt else "<unit prompt>" for part in argv],
             "worktree_path": str(worktree),
@@ -246,17 +323,29 @@ def _dispatch_unit(
             "worktree_ref": str(worktree),
         },
     )
+    started_at = utc_now()
+    started_clock = time.monotonic()
+    stderr_tail = ""
     try:
         completed = runner(argv, cwd=str(worktree), text=True, capture_output=True, timeout=timeout)
         exit_code = int(getattr(completed, "returncode", 1))
         output_tail = str(getattr(completed, "stdout", "") or "")[-2000:]
+        stderr_tail = str(getattr(completed, "stderr", "") or "")[-2000:]
     except FileNotFoundError:
         exit_code, output_tail = 127, f"{argv[0]} not found on PATH"
     except subprocess.TimeoutExpired:
         exit_code, output_tail = 124, f"unit timed out after {timeout}s"
     except OSError as exc:
         exit_code, output_tail = 1, f"spawn failed: {exc}"
+    finished_at = utc_now()
+    duration_seconds = round(time.monotonic() - started_clock, 3)
+    limit_label = _limit_shaped_label(output_tail, stderr_tail) if exit_code != 0 else ""
+    if limit_label:
+        _record_limit_signal(paths, owner, run_ref=run_ref, unit_id=unit_id, pattern_label=limit_label)
     status = "observed" if exit_code == 0 else "failed"
+    summary = f"unit {unit_id} exit {exit_code} after {duration_seconds}s: {output_tail[-300:]}"
+    if limit_label:
+        summary = f"limit-shaped failure ({limit_label}); {summary}"
     append_journal_observation(
         paths,
         {
@@ -265,20 +354,28 @@ def _dispatch_unit(
             "run_id": run_ref,
             "event": "worker_result",
             "status": status,
-            "summary": f"unit {unit_id} exit {exit_code}: {output_tail[-300:]}",
+            "summary": summary,
             "worker_ref": unit_id,
             "worktree_ref": str(worktree),
         },
     )
-    return {
+    result = {
         "unit_id": unit_id,
         "run_ref": run_ref,
         "owner": owner,
+        "model": routed_model,
         "status": "completed" if exit_code == 0 else "failed",
         "exit_code": exit_code,
         "worktree_path": str(worktree),
         "merge_ready": exit_code == 0,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_seconds": duration_seconds,
     }
+    if limit_label:
+        result["limit_shaped"] = True
+        result["limit_pattern"] = limit_label
+    return result
 
 
 def _ensure_unit_run(paths: OmhPaths, unit: Mapping[str, Any], owner: str) -> None:
@@ -365,3 +462,27 @@ def _skipped(unit: Mapping[str, Any], status: str, *, merge_ready: bool = False)
 
 def _worktree_path(repo_root: Path, unit_id: str) -> Path:
     return repo_root.parent / f"{repo_root.name}-fanout-{unit_id}"
+
+
+def _limit_shaped_label(output_tail: str, stderr_tail: str) -> str:
+    haystack = f"{output_tail}\n{stderr_tail}".casefold()
+    for label, pattern in _LIMIT_SHAPED_PATTERNS:
+        if pattern in haystack:
+            return label
+    return ""
+
+
+def _record_limit_signal(paths: OmhPaths, owner: str, *, run_ref: str, unit_id: str, pattern_label: str) -> None:
+    def _update(state: dict[str, Any]) -> dict[str, Any]:
+        state["schema_version"] = EXECUTOR_LIMIT_SIGNALS_SCHEMA_VERSION
+        profiles = state.setdefault("profiles", {})
+        profiles[owner] = {
+            "last_limit_shaped_at": utc_now(),
+            "run_ref": run_ref,
+            "unit_id": unit_id,
+            "pattern_label": pattern_label,
+        }
+        state["claim_boundary"] = EXECUTOR_LIMIT_SIGNALS_CLAIM_BOUNDARY
+        return state
+
+    locked_json_update(paths.executor_limit_signals_path, _update, private=True)

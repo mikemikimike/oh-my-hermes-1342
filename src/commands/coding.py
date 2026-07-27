@@ -103,6 +103,10 @@ def cmd_coding_delegate(args: argparse.Namespace) -> int:
         )
         if plan_artifact:
             _apply_plan_handoff_source(payload)
+        if payload.get("delegation_policy") or _payload_choice_required(payload):
+            from ..executor_readiness import executor_choice_context
+
+            payload["executor_choice_context"] = executor_choice_context(paths)
         runtime_skip_reason = ""
         if args.record:
             runtime_skip_reason = _coding_delegate_record_readiness_skip_reason(
@@ -575,6 +579,25 @@ def cmd_coding_quality_harness_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _payload_choice_required(payload: dict[str, object]) -> bool:
+    selection = payload.get("executor_selection")
+    return isinstance(selection, dict) and bool(selection.get("choice_required"))
+
+
+def cmd_coding_model_route(args: argparse.Namespace) -> int:
+    from ..coding.model_routing import resolve_model_route
+
+    _print_json(
+        resolve_model_route(
+            args.executor,
+            requested_model=args.model or "",
+            requested_effort=args.effort or "",
+            role=args.role or "",
+        )
+    )
+    return 0
+
+
 def cmd_coding_fanout_prepare(args: argparse.Namespace) -> int:
     from ..coding.fanout import build_fanout_contract, is_degenerate_single_unit, single_unit_redirect
     from ..coding.fanout_artifacts import write_fanout_contract
@@ -709,6 +732,125 @@ def cmd_coding_fanout_show(args: argparse.Namespace) -> int:
     _print_json(payload)
     _record_fanout_board_emission(paths, watched_runs, payload, fingerprint)
     return 0
+
+
+_FANOUT_BRIEF_SUMMARY_LIMIT = 200
+_FANOUT_BRIEF_CLAIM_BOUNDARY = (
+    "A fanout briefing joins the frozen contract with observed dispatch and journal metadata only. "
+    "It is not verification, review, CI, merge-readiness, or merge evidence; unknown fields stay "
+    "unknown rather than being inferred."
+)
+
+
+def cmd_coding_fanout_brief(args: argparse.Namespace) -> int:
+    from ..coding.fanout_artifacts import read_fanout_contract
+    from ..local_store import read_json_object_result
+    from ..runtime.artifacts import show_run
+
+    paths = _paths(args)
+    fanout_id = getattr(args, "fanout_id", None)
+    if not fanout_id:
+        _print_json(_fanout_brief_listing(paths))
+        return 0
+    try:
+        contract = read_fanout_contract(paths, fanout_id)
+    except (OSError, ValueError) as exc:
+        raise OmhError(f"fanout contract not found: {exc}") from exc
+    dispatch_summary, _ = read_json_object_result(paths.fanout_dispatch_summary_path(str(fanout_id)))
+    dispatched_units = {
+        str(entry.get("unit_id", "")): entry
+        for entry in (dispatch_summary or {}).get("units", [])
+        if isinstance(entry, dict)
+    }
+    units = []
+    watched_runs: list[str] = []
+    for unit in contract.get("units", []):
+        if not isinstance(unit, dict):
+            continue
+        unit_id = str(unit.get("unit_id", ""))
+        handoff = unit.get("handoff", {}) if isinstance(unit.get("handoff"), dict) else {}
+        model_route = handoff.get("model_route", {}) if isinstance(handoff.get("model_route"), dict) else {}
+        dispatched = dispatched_units.get(unit_id, {})
+        run_ref = str(unit.get("run_ref", ""))
+        latest_summary = ""
+        observed_status = "not_observed"
+        if run_ref and (paths.runtime_runs_dir / run_ref / "run.json").exists():
+            try:
+                shown = show_run(paths, run_ref, history_limit=1)
+            except (OSError, ValueError, KeyError):
+                shown = None
+            if isinstance(shown, dict):
+                watched_runs.append(run_ref)
+                events = [event for event in shown.get("journal_events", []) or [] if isinstance(event, dict)]
+                if events:
+                    latest_summary = str(events[-1].get("summary", ""))[:_FANOUT_BRIEF_SUMMARY_LIMIT]
+                    observed_status = str(events[-1].get("status", "not_observed"))
+                else:
+                    observed_status = "run_recorded_no_observations"
+        status = str(dispatched.get("status", "") or "") or str(unit.get("status", "prepared"))
+        units.append(
+            {
+                "unit_id": unit_id,
+                "owner": str(handoff.get("executor_target", "choose")),
+                "model": str(model_route.get("selected_model", "") or "") or "executor_default",
+                "session_ref": str(dispatched.get("session_ref", "") or "") or "unknown",
+                "status": status,
+                "observed_run_status": observed_status,
+                "elapsed_seconds": dispatched.get("duration_seconds", "unknown"),
+                "tokens_total": dispatched.get("tokens_total", "unknown"),
+                "limit_shaped": bool(dispatched.get("limit_shaped", False)),
+                "summary": latest_summary,
+            }
+        )
+    payload = {
+        "schema_version": "fanout_briefing/v1",
+        "fanout_id": contract.get("fanout_id"),
+        "merge_order": contract.get("merge_plan", {}).get("merge_order", []),
+        "dispatch_observed_at": (dispatch_summary or {}).get("observed_at", ""),
+        "units": units,
+        "generated_from": ["fanout_contract", "dispatch_summary", "run_journal"],
+        "claim_boundary": _FANOUT_BRIEF_CLAIM_BOUNDARY,
+    }
+    _print_json(payload)
+    _record_fanout_brief_emission(paths, watched_runs, payload)
+    return 0
+
+
+def _record_fanout_brief_emission(paths, watched_runs: list[str], payload: dict) -> None:
+    from ..runtime.context_budget import record_context_emission
+
+    if not watched_runs:
+        return
+    per_run = len(json.dumps(payload, sort_keys=True)) // len(watched_runs)
+    for run_ref in watched_runs:
+        record_context_emission(paths, run_ref, surface="fanout_brief", byte_count=per_run)
+
+
+def _fanout_brief_listing(paths) -> dict[str, object]:
+    from ..local_store import read_json_object_result
+
+    entries = []
+    contracts_dir = paths.fanout_contracts_dir
+    if contracts_dir.is_dir():
+        for child in sorted(contracts_dir.iterdir()):
+            contract_path = child / "fanout_contract.json"
+            if not contract_path.is_file():
+                continue
+            contract, _ = read_json_object_result(contract_path)
+            summary, _ = read_json_object_result(paths.fanout_dispatch_summary_path(child.name))
+            entries.append(
+                {
+                    "fanout_id": child.name,
+                    "unit_count": len((contract or {}).get("units", [])),
+                    "last_dispatch_observed_at": (summary or {}).get("observed_at", ""),
+                }
+            )
+    return {
+        "schema_version": "fanout_briefing_listing/v1",
+        "fanouts": entries,
+        "next_action": "run `omh coding fanout brief <fanout-id>` for one fanout's unit briefing",
+        "claim_boundary": _FANOUT_BRIEF_CLAIM_BOUNDARY,
+    }
 
 
 def _fanout_board_unchanged(paths, watched_runs: list[str], fingerprint: str) -> bool:
@@ -854,6 +996,23 @@ def _add_coding_commands(sub) -> None:
     fanout_dispatch.add_argument("--unit", action="append", default=None, help="Dispatch only these unit ids (repeatable).")
     fanout_dispatch.add_argument("--dry-run", action="store_true", help="Resolve readiness, argv, and worktree paths; spawn nothing.")
     fanout_dispatch.set_defaults(func=cmd_coding_fanout_dispatch)
+
+    fanout_brief = fanout_sub.add_parser(
+        "brief",
+        help="Join the frozen contract with observed dispatch/journal metadata into one per-unit briefing.",
+    )
+    fanout_brief.add_argument("fanout_id", nargs="?", default=None, help="Fanout id; omit to list known fanouts.")
+    fanout_brief.set_defaults(func=cmd_coding_fanout_brief)
+
+    model_route = coding_sub.add_parser(
+        "model-route",
+        help="Resolve the prepared model route for one executor profile (metadata only, never invocation).",
+    )
+    model_route.add_argument("--executor", required=True, help="Executor profile, for example codex or claude-code.")
+    model_route.add_argument("--model", default=None, help="Explicit model id; always passes through unvalidated.")
+    model_route.add_argument("--effort", default=None, help="Reasoning effort for profiles that support one.")
+    model_route.add_argument("--role", default=None, help="Subagent role: brain, implementation, design_visual, review, docs.")
+    model_route.set_defaults(func=cmd_coding_model_route)
 
     delegate = coding_sub.add_parser("delegate")
     delegate.add_argument("message", nargs="*", help="Coding task description to prepare for executor delegation.")

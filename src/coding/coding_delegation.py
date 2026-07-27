@@ -74,6 +74,12 @@ from ..skills.catalog import (
 
 SCHEMA_VERSION = "coding_delegation/v1"
 DELEGATION_ACTIONS = ("delegate", "clarify", "fallback")
+DELEGATION_POLICY_SCHEMA_VERSION = "coding_delegation_policy/v1"
+INLINE_CODING_POLICY_STATEMENT = (
+    "Hermes never implements main coding work inline. Coding-shaped work always becomes a prepared "
+    "handoff owned by a selected coding executor; when no executor is resolvable, ask the user which "
+    "coding agent should own the work instead of retaining it."
+)
 MESSAGE_CONTEXT_SCHEMA_VERSION = "coding_delegation_message_context/v1"
 MESSAGE_CONTEXT_MODES = ("full", "bounded")
 _CATALOG_INTENT_RETAINED_WORKFLOWS = set(catalog_intent_delegation_skill_names())
@@ -349,6 +355,8 @@ def build_coding_delegation_payload(
     )
     if isolation_plan:
         payload["isolation_plan"] = isolation_plan
+    if _inline_coding_policy_applies(delegation.intent, delegation.action, selection.choice_required):
+        payload["delegation_policy"] = inline_coding_policy_payload()
     if selection.selected_executor_profile == "codex" and delegation.action == "delegate":
         payload["executor_handoff"] = _executor_handoff(executor_target, delegation, isolation_plan=isolation_plan)
         _attach_context_pack(payload["executor_handoff"], context_pack)
@@ -573,6 +581,31 @@ def coding_delegation_record_payload(
     if isinstance(payload.get("plan_artifact"), dict):
         record["plan_artifact"] = payload["plan_artifact"]
     return record
+
+
+def inline_coding_policy_payload() -> dict[str, object]:
+    """Return the delegation-mandatory policy block for coding-shaped requests."""
+    return {
+        "schema_version": DELEGATION_POLICY_SCHEMA_VERSION,
+        "inline_coding_prohibited": True,
+        "policy": INLINE_CODING_POLICY_STATEMENT,
+        "ask_user_shape": (
+            "Ask which coding agent should own the work — for example Claude Code or Codex — "
+            "before any implementation starts."
+        ),
+    }
+
+
+def _inline_coding_policy_applies(intent: str, action: str, choice_required: bool) -> bool:
+    # The prohibition is product-wide; the block rides every payload where a
+    # wrapper could otherwise read "Hermes keeps it" into coding-shaped work:
+    # clarify/fallback outcomes and unresolved-owner delegations, including
+    # retained workflows. Wrappers read it from the payload; retained-workflow
+    # chat cards keep their contractually executor-free copy and never render
+    # it into user-facing text.
+    if intent not in {"coding", "review"}:
+        return False
+    return action != "delegate" or choice_required
 
 
 def _intent_for(message: str, workflow: str, score: int) -> str:

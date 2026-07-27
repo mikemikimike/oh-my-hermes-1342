@@ -152,7 +152,7 @@ def probe_executor_readiness(
         result["cache_status"] = "cached"
         result["first_use_skipped"] = True
         result["claim_boundary"] = contract["claim_boundary"]
-        return result
+        return _with_advisory_signals(paths, normalized, result)
     if dry_run:
         result = dict(contract)
         result.update(
@@ -163,9 +163,23 @@ def probe_executor_readiness(
                 "state_error": state_error or "",
             }
         )
-        return result
+        return _with_advisory_signals(paths, normalized, result)
     result = _run_probe(contract)
     _write_state(paths, state, normalized, result)
+    return _with_advisory_signals(paths, normalized, result)
+
+
+def _with_advisory_signals(paths: OmhPaths, profile: str, result: dict[str, object]) -> dict[str, object]:
+    """Attach live advisory markers outside the observed_once cache.
+
+    Login and limit markers change whenever the user logs in/out or a dispatch
+    hits a provider limit, so they are recomputed on every call and never
+    persisted with the cached probe (which would freeze them at first use).
+    """
+    from .executor_auth_signals import auth_signal_for_profile, last_limit_signal_for_profile
+
+    result["auth_signal"] = auth_signal_for_profile(profile)
+    result["last_limit_signal"] = last_limit_signal_for_profile(paths, profile)
     return result
 
 
@@ -234,6 +248,41 @@ def _run_probe(contract: dict[str, object]) -> dict[str, object]:
     return result
 
 
+EXECUTOR_CHOICE_CONTEXT_PROFILES = ("codex", "claude-code")
+EXECUTOR_CHOICE_CONTEXT_CLAIM_BOUNDARY = (
+    "Choice context ranks locally-installed executor candidates from cached readiness and local "
+    "markers only. It is not provider quota, entitlement, or login truth, and it never removes a "
+    "candidate the user may still pick."
+)
+
+
+def executor_choice_context(paths: OmhPaths) -> dict[str, object]:
+    """Return per-candidate readiness/auth context for the choose-executor question.
+
+    Reads cached readiness state and cheap local markers only — no subprocess
+    runs — so wrapper cards can embed it as deterministic data.
+    """
+    from .executor_auth_signals import auth_signal_for_profile, last_limit_signal_for_profile
+
+    state, _ = _read_state(paths)
+    candidates: list[dict[str, object]] = []
+    for profile in EXECUTOR_CHOICE_CONTEXT_PROFILES:
+        cached = _cached_profile(state, profile) or {}
+        candidates.append(
+            {
+                "profile": profile,
+                "label": executor_label(profile),
+                "readiness_status": str(cached.get("status", "not_observed")),
+                "auth_signal": auth_signal_for_profile(profile),
+                "last_limit_signal": last_limit_signal_for_profile(paths, profile),
+            }
+        )
+    return {
+        "candidates": candidates,
+        "claim_boundary": EXECUTOR_CHOICE_CONTEXT_CLAIM_BOUNDARY,
+    }
+
+
 def _ready_action(profile: str) -> str:
     if profile == "codex":
         return "send_to_executor"
@@ -281,6 +330,10 @@ def _write_state(paths: OmhPaths, state: dict[str, Any], profile: str, result: d
     if not isinstance(profiles, dict):
         profiles = {}
     stored = dict(result)
+    # Advisory markers are recomputed per call; persisting them would freeze
+    # login/limit state at first probe (see _with_advisory_signals).
+    stored.pop("auth_signal", None)
+    stored.pop("last_limit_signal", None)
     stored["updated_at"] = utc_now()
     profiles[profile] = stored
     state.update(

@@ -5478,10 +5478,12 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
                 "prepared_handoff_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
                 "executor_readiness": delegation_payload.get("executor_readiness", {}),
                 "executor_resolution": executor_resolution,
+                **_delegation_policy_state(delegation_payload),
             },
         )
     if action == "clarify":
         workflow = str(delegation.get("recommended_workflow", ""))
+        policy_state = _delegation_policy_state(delegation_payload)
         if workflow in _RETAINED_DELEGATION_SKILLS:
             return _chat_response(
                 kind="clarification",
@@ -5507,7 +5509,11 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
             thread_key=thread_key,
             actions=[_action("answer:clarify", "Answer clarification", "primary"), _action("cancel", "Cancel", "secondary")],
             claim_boundary="No executor handoff is dispatchable.",
-            extra_state={"delegation_action": action, "intent": delegation.get("intent", "unknown")},
+            extra_state={
+                "delegation_action": action,
+                "intent": delegation.get("intent", "unknown"),
+                **policy_state,
+            },
         )
     return _chat_response(
         kind="clarification",
@@ -5520,6 +5526,14 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
         claim_boundary="No executor handoff is dispatchable.",
         extra_state={"delegation_action": action, "intent": delegation.get("intent", "unknown")},
     )
+
+
+def _delegation_policy_state(delegation_payload: dict[str, Any]) -> dict[str, object]:
+    """Pass the delegation-mandatory policy block through to card state when present."""
+    policy = delegation_payload.get("delegation_policy")
+    if not isinstance(policy, dict) or not policy.get("inline_coding_prohibited"):
+        return {}
+    return {"delegation_policy": dict(policy)}
 
 
 def build_chat_response_from_status(status_payload: dict[str, Any], *, thread_key: str = "") -> dict[str, object]:

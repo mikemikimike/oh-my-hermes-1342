@@ -1,0 +1,104 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Final
+
+from ..system.local_store import read_json_object_result, utc_now
+from ..system.paths import OmhPaths
+
+EXECUTOR_AUTH_SIGNALS_SCHEMA_VERSION: Final[str] = "executor_auth_signals/v1"
+
+EXECUTOR_AUTH_SIGNALS_CLAIM_BOUNDARY: Final[str] = (
+    "An auth signal is a local file-presence marker only. It is not subscription tier, quota, "
+    "entitlement, or login truth — the provider owns those — and no secret value is ever read "
+    "into omh state."
+)
+
+AUTH_MARKER_STATES: Final[tuple[str, ...]] = ("present", "absent", "unknown")
+
+# Marker sources are local config files the agent CLIs write after login.
+# Only presence/shape is observed; values are never copied. API-key or
+# environment-token installs legitimately show `absent` while working —
+# markers rank candidates, they never veto one.
+_CLAUDE_CONFIG_RELATIVE: Final[str] = ".claude.json"
+_CLAUDE_LOGIN_KEY: Final[str] = "oauthAccount"
+_CODEX_AUTH_RELATIVE: Final[str] = ".codex/auth.json"
+
+AUTH_SIGNAL_PROFILES: Final[tuple[str, ...]] = ("codex", "claude-code")
+
+
+def executor_auth_signals(home: Path | None = None) -> dict[str, object]:
+    """Return metadata-only login markers for the locally-installed agent CLIs."""
+    base = home if home is not None else Path.home()
+    return {
+        "schema_version": EXECUTOR_AUTH_SIGNALS_SCHEMA_VERSION,
+        "observed_at": utc_now(),
+        "profiles": {
+            "codex": _marker_payload(_codex_marker(base), marker_kind="local_auth_file"),
+            "claude-code": _marker_payload(_claude_marker(base), marker_kind="local_config_login_key"),
+        },
+        "claim_boundary": EXECUTOR_AUTH_SIGNALS_CLAIM_BOUNDARY,
+    }
+
+
+def auth_signal_for_profile(profile: str, home: Path | None = None) -> dict[str, object]:
+    """Return the auth-signal entry for one profile; non-CLI profiles are not_applicable."""
+    normalized = str(profile or "").strip().casefold()
+    if normalized not in AUTH_SIGNAL_PROFILES:
+        return {
+            "login_marker": "not_applicable",
+            "marker_kind": "",
+            "observed_at": utc_now(),
+            "claim_boundary": EXECUTOR_AUTH_SIGNALS_CLAIM_BOUNDARY,
+        }
+    signals = executor_auth_signals(home)
+    profiles = signals.get("profiles")
+    entry = dict(profiles[normalized]) if isinstance(profiles, dict) and normalized in profiles else {}
+    entry["claim_boundary"] = EXECUTOR_AUTH_SIGNALS_CLAIM_BOUNDARY
+    return entry
+
+
+def last_limit_signal_for_profile(paths: OmhPaths, profile: str) -> dict[str, object]:
+    """Return the last observed limit-shaped dispatch failure for one profile, if any."""
+    state, error = read_json_object_result(paths.executor_limit_signals_path)
+    if error or not isinstance(state, dict):
+        return {}
+    profiles = state.get("profiles")
+    if not isinstance(profiles, dict):
+        return {}
+    entry = profiles.get(str(profile or "").strip().casefold())
+    if not isinstance(entry, dict):
+        return {}
+    return {str(key): value for key, value in entry.items()}
+
+
+def _claude_marker(home: Path) -> str:
+    config_path = home / _CLAUDE_CONFIG_RELATIVE
+    try:
+        if not config_path.is_file():
+            return "absent"
+        parsed = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return "unknown"
+    if not isinstance(parsed, dict):
+        return "unknown"
+    return "present" if _CLAUDE_LOGIN_KEY in parsed else "absent"
+
+
+def _codex_marker(home: Path) -> str:
+    auth_path = home / _CODEX_AUTH_RELATIVE
+    try:
+        if not auth_path.is_file():
+            return "absent"
+        return "present" if auth_path.stat().st_size > 0 else "absent"
+    except OSError:
+        return "unknown"
+
+
+def _marker_payload(marker: str, *, marker_kind: str) -> dict[str, object]:
+    return {
+        "login_marker": marker,
+        "marker_kind": marker_kind,
+        "observed_at": utc_now(),
+    }

@@ -455,5 +455,173 @@ class FanoutDispatchCliTests(unittest.TestCase):
             self.assertIn("does not match the digest", stderr)
 
 
+class FanoutDispatchTelemetryTests(unittest.TestCase):
+    def _setup(self, tmp: str, units=None):
+        root = Path(tmp)
+        paths = OmhPaths(omh_home=root / ".omh", hermes_home=root / ".hermes")
+        repo, sha = _make_repo(root)
+        contract = write_fanout_contract(paths, build_fanout_contract(_GOAL, units or _UNITS))
+        return paths, repo, sha, contract
+
+    def test_observed_units_record_timestamps_and_duration(self) -> None:
+        with TemporaryDirectory() as tmp:
+            paths, repo, sha, contract = self._setup(tmp)
+            summary = dispatch_fanout(
+                paths, contract, goal_text=_GOAL, repo_root=repo, base_sha=sha,
+                runner=_agent_runner(), readiness=_ready,
+            )
+            core = {entry["unit_id"]: entry for entry in summary["units"]}["core"]
+            self.assertTrue(str(core["started_at"]).endswith("Z"))
+            self.assertTrue(str(core["finished_at"]).endswith("Z"))
+            self.assertGreaterEqual(float(core["duration_seconds"]), 0.0)
+
+    def test_dispatch_summary_is_persisted_metadata_only(self) -> None:
+        with TemporaryDirectory() as tmp:
+            paths, repo, sha, contract = self._setup(tmp)
+            dispatch_fanout(
+                paths, contract, goal_text=_GOAL, repo_root=repo, base_sha=sha,
+                runner=_agent_runner(), readiness=_ready,
+            )
+            stored_path = paths.fanout_dispatch_summary_path(str(contract["fanout_id"]))
+            self.assertTrue(stored_path.is_file())
+            stored = json.loads(stored_path.read_text(encoding="utf-8"))
+            self.assertEqual(stored["schema_version"], "fanout_dispatch_summary/v1")
+            # Persisted state stays metadata-only: no raw agent output fields.
+            for entry in stored["units"]:
+                self.assertNotIn("stdout", entry)
+                self.assertNotIn("output_tail", entry)
+                self.assertNotIn("planned_argv", entry)
+
+    def test_dry_run_does_not_persist_a_summary(self) -> None:
+        with TemporaryDirectory() as tmp:
+            paths, repo, sha, contract = self._setup(tmp)
+            dispatch_fanout(
+                paths, contract, goal_text=_GOAL, repo_root=repo, base_sha=sha,
+                dry_run=True, runner=_agent_runner(), readiness=_ready,
+            )
+            self.assertFalse(paths.fanout_dispatch_summary_path(str(contract["fanout_id"])).exists())
+
+    def test_limit_shaped_failure_is_classified_and_recorded(self) -> None:
+        with TemporaryDirectory() as tmp:
+            units = [
+                {"unit_id": "core", "title": "Core", "owner": "codex", "file_scope": ["src/core/"]},
+            ]
+            other = [
+                {"unit_id": "docs", "title": "Docs", "owner": "claude-code", "file_scope": ["docs/"]},
+            ]
+            paths, repo, sha, contract = self._setup(tmp, units=units + other)
+
+            def runner(argv, **kwargs):
+                if argv[0] == "git":
+                    return subprocess.run(argv, **kwargs)
+                if argv[0] == "codex":
+                    return _FakeCompleted(1, "Error: You have hit your usage limit. Try again later.")
+                return _FakeCompleted(0, "done")
+
+            summary = dispatch_fanout(
+                paths, contract, goal_text=_GOAL, repo_root=repo, base_sha=sha,
+                runner=runner, readiness=_ready,
+            )
+            by_unit = {entry["unit_id"]: entry for entry in summary["units"]}
+            self.assertTrue(by_unit["core"]["limit_shaped"])
+            self.assertEqual(by_unit["core"]["limit_pattern"], "usage_limit")
+            self.assertNotIn("limit_shaped", by_unit["docs"])
+            stored = json.loads(paths.executor_limit_signals_path.read_text(encoding="utf-8"))
+            self.assertEqual(stored["profiles"]["codex"]["pattern_label"], "usage_limit")
+            self.assertNotIn("claude-code", stored["profiles"])
+            # Journal summary names the shape without dumping extra raw text.
+            shown = show_run(paths, by_unit["core"]["run_ref"])
+            result_events = [e for e in shown["journal_events"] if e["event"] == "executor_result_observed"]
+            self.assertIn("limit-shaped failure (usage_limit)", result_events[-1]["summary"])
+
+    def test_successful_exit_is_never_limit_shaped(self) -> None:
+        with TemporaryDirectory() as tmp:
+            units = [{"unit_id": "core", "title": "Core", "owner": "codex", "file_scope": ["src/core/"]}]
+            paths, repo, sha, contract = self._setup(tmp, units=units + [
+                {"unit_id": "docs", "title": "Docs", "owner": "claude-code", "file_scope": ["docs/"]},
+            ])
+
+            def runner(argv, **kwargs):
+                if argv[0] == "git":
+                    return subprocess.run(argv, **kwargs)
+                return _FakeCompleted(0, "quota discussion in output but exit 0")
+
+            summary = dispatch_fanout(
+                paths, contract, goal_text=_GOAL, repo_root=repo, base_sha=sha,
+                runner=runner, readiness=_ready,
+            )
+            for entry in summary["units"]:
+                self.assertNotIn("limit_shaped", entry)
+            self.assertFalse(paths.executor_limit_signals_path.exists())
+
+    def test_routed_model_reaches_spawn_argv(self) -> None:
+        with TemporaryDirectory() as tmp:
+            units = [
+                {"unit_id": "brain", "title": "Brain", "owner": "codex", "file_scope": ["src/a/"], "role": "brain"},
+                {"unit_id": "ui", "title": "UI", "owner": "claude-code", "file_scope": ["src/b/"], "model": "opus"},
+            ]
+            paths, repo, sha, contract = self._setup(tmp, units=units)
+            runner = _agent_runner()
+            summary = dispatch_fanout(
+                paths, contract, goal_text=_GOAL, repo_root=repo, base_sha=sha,
+                runner=runner, readiness=_ready,
+            )
+            spawned = {argv[0]: argv for argv in runner.spawned}
+            self.assertIn("--config", spawned["codex"])
+            self.assertIn("model_reasoning_effort=high", spawned["codex"])
+            self.assertIn("--model", spawned["claude"])
+            self.assertIn("opus", spawned["claude"])
+            by_unit = {entry["unit_id"]: entry for entry in summary["units"]}
+            self.assertEqual(by_unit["ui"]["model"], "opus")
+
+
+class FanoutBriefCliTests(unittest.TestCase):
+    def test_brief_joins_contract_journal_and_dispatch_summary(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = OmhPaths(omh_home=root / ".omh", hermes_home=root / ".hermes")
+            repo, sha = _make_repo(root)
+            units = [
+                {"unit_id": "core", "title": "Core", "owner": "codex", "file_scope": ["src/core/"], "role": "brain"},
+                {"unit_id": "manual", "title": "Manual", "owner": "hermes", "file_scope": ["notes/"]},
+            ]
+            contract = write_fanout_contract(paths, build_fanout_contract(_GOAL, units))
+            dispatch_fanout(
+                paths, contract, goal_text=_GOAL, repo_root=repo, base_sha=sha,
+                runner=_agent_runner(), readiness=_ready,
+            )
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            status, stdout, stderr = run_cli(base + ["coding", "fanout", "brief", str(contract["fanout_id"])])
+            self.assertEqual(status, 0, stderr)
+            brief = json.loads(stdout)
+            self.assertEqual(brief["schema_version"], "fanout_briefing/v1")
+            by_unit = {entry["unit_id"]: entry for entry in brief["units"]}
+            core = by_unit["core"]
+            self.assertEqual(core["owner"], "codex")
+            self.assertEqual(core["model"], "gpt-5-codex")
+            self.assertEqual(core["status"], "completed")
+            self.assertEqual(core["session_ref"], "unknown")
+            self.assertEqual(core["tokens_total"], "unknown")
+            self.assertGreaterEqual(float(core["elapsed_seconds"]), 0.0)
+            # A never-dispatched unit keeps its prepared-vs-observed shape.
+            manual = by_unit["manual"]
+            self.assertEqual(manual["status"], "unsupported_for_local_dispatch")
+            self.assertEqual(manual["observed_run_status"], "not_observed")
+            self.assertIn("unknown fields stay", brief["claim_boundary"])
+
+    def test_brief_without_id_lists_known_fanouts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = OmhPaths(omh_home=root / ".omh", hermes_home=root / ".hermes")
+            contract = write_fanout_contract(paths, build_fanout_contract(_GOAL, _UNITS))
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            status, stdout, stderr = run_cli(base + ["coding", "fanout", "brief"])
+            self.assertEqual(status, 0, stderr)
+            listing = json.loads(stdout)
+            self.assertEqual(listing["schema_version"], "fanout_briefing_listing/v1")
+            self.assertEqual(listing["fanouts"][0]["fanout_id"], contract["fanout_id"])
+            self.assertEqual(listing["fanouts"][0]["unit_count"], 3)
+
+
 if __name__ == "__main__":
     unittest.main()
