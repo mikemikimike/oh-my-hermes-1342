@@ -348,14 +348,18 @@ class ProviderLifecycleTests(unittest.TestCase):
             provider.on_memory_write("add", "memory", "text")
             self.assertEqual(read_dreaming_state(root / ".omh"), empty_dreaming_state())
 
-    def test_compaction_hands_back_system_blocks_and_arms_the_trigger(self) -> None:
+    def test_compaction_hands_back_system_blocks_and_consolidates_at_once(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_memory_block(root / ".omh", build_memory_block("facts", "must survive compaction"))
             provider = self._provider(root)
             preserved = provider.on_pre_compress([{"role": "user", "content": "hi"}])
+
             self.assertIn("must survive compaction", preserved)
-            self.assertTrue(read_dreaming_state(root / ".omh")["compaction_pending"])
+            # The flag is cleared because the brief was written here rather than
+            # deferred; waiting would put it after the material it describes.
+            self.assertFalse(read_dreaming_state(root / ".omh")["compaction_pending"])
+            self.assertTrue((root / ".omh" / "memory" / "consolidation.json").exists())
 
     def test_consolidation_writes_a_brief_only_when_it_is_due(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -366,13 +370,13 @@ class ProviderLifecycleTests(unittest.TestCase):
             self.assertFalse(provider.consolidation_due()["due"])
             self.assertFalse(handoff_path.exists())
 
-            for _ in range(DEFAULT_TURN_INTERVAL):
-                provider.on_turn_start(1, "hello")
-            handoff = provider.consolidation_due()
-            self.assertTrue(handoff["due"])
+            for turn in range(1, DEFAULT_TURN_INTERVAL + 1):
+                provider.on_turn_start(turn, "hello")
             self.assertTrue(handoff_path.exists())
-            # Firing resets the counters, so the next turn does not re-fire.
+            # The interval fired on the turn itself and reset the counters, so
+            # asking again straight after finds nothing further due.
             self.assertEqual(read_dreaming_state(root / ".omh")["turns_since_consolidation"], 0)
+            self.assertFalse(provider.consolidation_due()["due"])
 
     def test_the_brief_never_claims_consolidation_happened(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -394,6 +398,142 @@ class ProviderLifecycleTests(unittest.TestCase):
             provider = self._provider(root)
             with patch("omh.plugin_bundle.omh.memory_provider._append_line", side_effect=OSError("read-only")):
                 provider.on_memory_write("add", "memory", "text")  # must not raise
+
+
+class LossPreventionTests(unittest.TestCase):
+    """The four moments memory can be lost, and that each one leaves a brief.
+
+    The first implementation evaluated only at `on_session_end`. Turns and
+    compaction set counters nobody read until then, so a laptop closed
+    mid-session wrote nothing at all and a turn interval that came due at turn 5
+    waited for whenever the session happened to stop. These pin the fix.
+    """
+
+    def _provider(self, root: Path, session: str = "s1") -> OmhMemoryProvider:
+        provider = OmhMemoryProvider(root / ".omh")
+        provider.initialize(session, hermes_home=str(root / ".hermes"), agent_context="primary")
+        return provider
+
+    def _briefs(self, root: Path) -> list[dict]:
+        path = root / ".omh" / "memory" / "consolidation.jsonl"
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+
+    def test_the_turn_interval_fires_mid_session_not_at_the_end(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = self._provider(root)
+            for turn in range(1, DEFAULT_TURN_INTERVAL):
+                provider.on_turn_start(turn, "hi")
+            self.assertEqual(self._briefs(root), [])
+
+            provider.on_turn_start(DEFAULT_TURN_INTERVAL, "hi")
+            briefs = self._briefs(root)
+            self.assertEqual(len(briefs), 1)
+            self.assertEqual(briefs[0]["trigger"], "turn")
+
+    def test_the_interval_keeps_firing_on_every_further_cycle(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = self._provider(root)
+            for turn in range(1, DEFAULT_TURN_INTERVAL * 2 + 1):
+                provider.on_turn_start(turn, "hi")
+            self.assertEqual(len(self._briefs(root)), 2)
+
+    def test_compaction_writes_its_brief_before_the_messages_go(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = self._provider(root)
+            provider.on_turn_start(1, "hi")
+            provider.on_pre_compress([{"role": "user", "content": "x"}] * 40)
+
+            briefs = self._briefs(root)
+            self.assertEqual(len(briefs), 1)
+            self.assertEqual(briefs[0]["trigger"], "compaction")
+            self.assertEqual(briefs[0]["messages_at_risk"], 40)
+            self.assertIn("about to discard", briefs[0]["requested_of_executor"][0])
+
+    def test_shutdown_consolidates_even_below_the_interval(self) -> None:
+        # Three turns and a closed lid would otherwise leave nothing behind: the
+        # interval assumes a later turn, and a closing session has none.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = self._provider(root)
+            for turn in range(1, 4):
+                provider.on_turn_start(turn, "hi")
+            provider.shutdown()
+
+            briefs = self._briefs(root)
+            self.assertEqual(len(briefs), 1)
+            self.assertEqual(briefs[0]["trigger"], "shutdown")
+            self.assertIn("session_ending_with_unconsolidated_turns:3", briefs[0]["reasons"])
+
+    def test_session_end_consolidates_even_below_the_interval(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = self._provider(root)
+            provider.on_turn_start(1, "hi")
+            provider.on_session_end([])
+            self.assertEqual(self._briefs(root)[0]["trigger"], "session_end")
+
+    def test_a_session_that_died_is_settled_when_the_next_one_starts(self) -> None:
+        # A killed process reaches no hook at all. The counters are on disk, so
+        # the next startup is the first moment anything can act on them.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            died = self._provider(root, "dead-session")
+            for turn in range(1, 4):
+                died.on_turn_start(turn, "hi")
+            self.assertEqual(self._briefs(root), [])
+            del died
+
+            self._provider(root, "next-session")
+            briefs = self._briefs(root)
+            self.assertEqual(len(briefs), 1)
+            self.assertEqual(briefs[0]["trigger"], "session_start_recovery")
+            self.assertIn("closed laptop", briefs[0]["requested_of_executor"][0])
+
+    def test_a_clean_start_recovers_nothing_and_says_nothing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._provider(root)
+            self.assertEqual(self._briefs(root), [])
+
+    def test_briefs_accumulate_so_an_earlier_one_is_never_overwritten(self) -> None:
+        # The compaction brief describes material that is already gone; losing
+        # it to a later shutdown brief would defeat the point.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = self._provider(root)
+            provider.on_turn_start(1, "hi")
+            provider.on_pre_compress([{"role": "user"}])
+            provider.on_turn_start(2, "hi")
+            provider.shutdown()
+
+            triggers = [brief["trigger"] for brief in self._briefs(root)]
+            self.assertEqual(triggers, ["compaction", "shutdown"])
+            latest = json.loads((root / ".omh" / "memory" / "consolidation.json").read_text(encoding="utf-8"))
+            self.assertEqual(latest["trigger"], "shutdown")
+
+    def test_a_fired_trigger_does_not_immediately_refire(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = self._provider(root)
+            for turn in range(1, DEFAULT_TURN_INTERVAL + 1):
+                provider.on_turn_start(turn, "hi")
+            self.assertEqual(len(self._briefs(root)), 1)
+            provider.on_session_end([])
+            self.assertEqual(len(self._briefs(root)), 1)
+
+    def test_a_non_primary_context_never_writes_a_brief(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = OmhMemoryProvider(root / ".omh")
+            provider.initialize("cron-1", hermes_home=str(root / ".hermes"), agent_context="cron")
+            for turn in range(1, DEFAULT_TURN_INTERVAL + 2):
+                provider.on_turn_start(turn, "hi")
+            provider.on_pre_compress([{"role": "user"}])
+            provider.shutdown()
+            self.assertEqual(self._briefs(root), [])
 
 
 class MemoryToolActionTests(unittest.TestCase):

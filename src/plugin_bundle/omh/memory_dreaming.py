@@ -132,12 +132,18 @@ def consolidation_reasons(
     headroom_floor_chars: int = DEFAULT_HEADROOM_FLOOR_CHARS,
     duplicate_count: int = 0,
     expiring_count: int = 0,
+    session_ending: bool = False,
 ) -> list[str]:
     """Why consolidation is due now, or an empty list when it is not.
 
     Reasons are returned rather than a bare boolean so the handoff can state its
     own cause. "It is time" and "the file is nearly full" ask for different work,
     and a brief that cannot tell them apart is a brief that says nothing.
+
+    ``session_ending`` lowers the bar to a single unconsolidated turn, because
+    the interval assumes a later turn will come and a closing session is exactly
+    where that assumption fails. Three turns and a closed laptop would otherwise
+    leave nothing behind.
     """
     if normalize_dreaming_mode(mode) == "off":
         return []
@@ -146,6 +152,8 @@ def consolidation_reasons(
     turns = _non_negative_int(state.get("turns_since_consolidation"))
     if turns >= interval:
         reasons.append(f"turn_interval_reached:{turns}/{interval}")
+    elif session_ending and turns > 0:
+        reasons.append(f"session_ending_with_unconsolidated_turns:{turns}")
     if bool(state.get("compaction_pending")):
         reasons.append("context_compaction_observed")
     if headroom_chars is not None and headroom_chars <= max(headroom_floor_chars, 0):
@@ -157,30 +165,61 @@ def consolidation_reasons(
     return reasons
 
 
+# What the executor is asked to do differs by which moment woke it. A brief
+# written because the context is about to be discarded is asking for something
+# a routine interval brief is not.
+_TRIGGER_INSTRUCTIONS = {
+    "compaction": (
+        "Context compression is about to discard messages. Extract anything durable from them "
+        "FIRST -- that material does not survive this turn."
+    ),
+    "shutdown": (
+        "Hermes is closing. Save what is worth keeping now; there is no later turn in this session."
+    ),
+    "session_end": "The session ended. Consolidate what it produced before it is only a transcript.",
+    "session_start_recovery": (
+        "A previous session ended without consolidating -- a closed laptop, a killed process, a lost "
+        "gateway. Its counters are below and its work was never reviewed."
+    ),
+    "turn": "The turn interval came due. Review recent work and consolidate what proved durable.",
+}
+
+
 def build_consolidation_handoff(
     reasons: list[str],
     *,
     block_summaries: list[dict[str, object]] | None = None,
     eviction_plan: dict[str, object] | None = None,
     mode: str = DEFAULT_DREAMING_MODE,
+    trigger: str = "manual",
+    messages_at_risk: int = 0,
+    session_id: str = "",
 ) -> dict[str, object]:
     """A prepared brief for whoever actually consolidates.
 
     OMH never executes this. It states what it observed and what it would like
     decided; Hermes' own memory tool is the only thing that can act on it.
     """
+    requested = [_TRIGGER_INSTRUCTIONS.get(trigger, "Review what is below and consolidate what is durable.")]
+    if messages_at_risk:
+        requested.append(f"{messages_at_risk} message(s) are in the buffer being compressed.")
+    requested.extend(
+        [
+            "Rewrite or merge memory through Hermes' own memory tool, not through OMH.",
+            "Leave anything you cannot source; an unsourced entry is not evidence it is wrong.",
+        ]
+    )
     return {
         "schema_version": DREAMING_HANDOFF_SCHEMA_VERSION,
         "mode": normalize_dreaming_mode(mode),
         "due": bool(reasons),
+        "trigger": trigger,
+        "session_id": session_id,
+        "messages_at_risk": messages_at_risk,
         "reasons": list(reasons),
         "blocks": list(block_summaries or []),
         "eviction_plan": dict(eviction_plan or {}),
-        "requested_of_executor": [
-            "Review the reasons and the eviction plan below.",
-            "Rewrite or merge memory through Hermes' own memory tool, not through OMH.",
-            "Leave anything you cannot source; an unsourced entry is not evidence it is wrong.",
-        ],
+        "requested_of_executor": requested,
         "redaction_policy": "metadata_only",
         "claim_boundary": (
             "A consolidation handoff is prepared context. It is not evidence that memory was "

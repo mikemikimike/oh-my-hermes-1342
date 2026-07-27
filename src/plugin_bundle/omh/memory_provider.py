@@ -71,6 +71,12 @@ WRITE_JOURNAL_SCHEMA_VERSION = "omh_memory_write_journal_entry/v1"
 # decide when consolidation is due.
 _WRITING_CONTEXTS = frozenset({"", "primary"})
 
+# Moments after which this session gets no further turn. The turn interval
+# assumes a later turn will come; at these it will not, so a single
+# unconsolidated turn is enough. `session_start_recovery` belongs here because
+# it is settling the account of a session that already ended without one.
+_SESSION_ENDING_TRIGGERS = frozenset({"session_end", "shutdown", "session_start_recovery"})
+
 
 class OmhMemoryProvider(_MemoryProviderBase):
     """Deterministic, file-backed recall for Hermes. No model call, no network."""
@@ -104,6 +110,11 @@ class OmhMemoryProvider(_MemoryProviderBase):
         self._hermes_home = Path(str(hermes_home)).expanduser() if hermes_home else None
         self._writes_enabled = str(kwargs.get("agent_context", "") or "") in _WRITING_CONTEXTS
         self._pack = self.render_pack()
+        # A session that died rather than ended -- a killed process, a closed
+        # laptop, a lost gateway -- never reaches on_session_end, so nothing
+        # would ever act on the turns it accumulated. The counters survived on
+        # disk; this is where they are honoured.
+        self._evaluate_if_due("session_start_recovery")
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         """None. The on-demand block read lives on the existing `omh_memory` tool."""
@@ -117,6 +128,8 @@ class OmhMemoryProvider(_MemoryProviderBase):
         self._pack = self.render_pack()
 
     def shutdown(self) -> None:
+        """Hermes is closing. Last chance to leave a brief behind."""
+        self._evaluate_if_due("shutdown")
         self._pack = ""
 
     # -- Optional hooks -----------------------------------------------------
@@ -125,15 +138,21 @@ class OmhMemoryProvider(_MemoryProviderBase):
         if not self._writes_enabled:
             return
         self._mutate_state(record_turn)
+        self._evaluate_if_due("turn")
 
     def on_pre_compress(self, messages: list[dict[str, Any]] | None = None) -> str:
         """Hand the compressor what must survive it, and note that it happened.
 
         Compaction is one of the two triggers Letta uses for dreaming, and it is
         the more informative one: the session just proved it outgrew its context.
+        It is also the one place where waiting costs something real -- the brief
+        has to exist *before* the messages go, not at whatever later moment the
+        session happens to end -- so the evaluation runs here rather than being
+        deferred with a flag.
         """
         if self._writes_enabled:
             self._mutate_state(record_compaction)
+            self._evaluate_if_due("compaction", messages_at_risk=len(messages or []))
         blocks = read_memory_blocks(self._omh_home, tier=SYSTEM_TIER)
         if not blocks:
             return ""
@@ -159,11 +178,22 @@ class OmhMemoryProvider(_MemoryProviderBase):
         self._mutate_state(record_memory_write)
 
     def on_session_end(self, messages: list[dict[str, Any]] | None = None) -> None:
-        if not self._writes_enabled:
-            return
-        self.consolidation_due()
+        self._evaluate_if_due("session_end")
 
     # -- Deterministic work, exposed for the CLI and for tests --------------
+
+    def _evaluate_if_due(self, trigger: str, *, messages_at_risk: int = 0) -> dict[str, object] | None:
+        """Weigh the triggers at one of the moments memory can be lost.
+
+        Every trigger point calls this: each turn, compaction, session end,
+        shutdown, and the start of the next session. Deferring the decision to
+        session end alone -- which is what this did first -- means a laptop that
+        closes mid-session writes nothing at all, and a turn interval that comes
+        due at turn 5 waits until whenever the session happens to stop.
+        """
+        if not self._writes_enabled:
+            return None
+        return self.consolidation_due(trigger=trigger, messages_at_risk=messages_at_risk)
 
     def render_pack(self) -> str:
         """System blocks in full, reference blocks by label only."""
@@ -174,7 +204,7 @@ class OmhMemoryProvider(_MemoryProviderBase):
         index = render_block_index(read_memory_blocks(self._omh_home, tier=REFERENCE_TIER))
         return "\n".join(part for part in (system, index) if part)
 
-    def consolidation_due(self) -> dict[str, object]:
+    def consolidation_due(self, *, trigger: str = "manual", messages_at_risk: int = 0) -> dict[str, object]:
         """Decide whether dreaming is due; write the brief when it is.
 
         Returns the handoff either way so a caller can see the reasons that were
@@ -192,11 +222,15 @@ class OmhMemoryProvider(_MemoryProviderBase):
             state,
             headroom_chars=headroom,
             duplicate_count=len(plan.get("duplicate_clusters", []) or []),
+            session_ending=trigger in _SESSION_ENDING_TRIGGERS,
         )
         handoff = build_consolidation_handoff(
             reasons,
             block_summaries=[block.to_summary() for block in read_memory_blocks(self._omh_home)],
             eviction_plan=plan,
+            trigger=trigger,
+            messages_at_risk=messages_at_risk,
+            session_id=self._session_id,
         )
         if reasons:
             self._write_handoff(handoff)
@@ -222,10 +256,17 @@ class OmhMemoryProvider(_MemoryProviderBase):
         self._safely(lambda: write_dreaming_state(self._omh_home, mutate(state)))
 
     def _write_handoff(self, handoff: dict[str, object]) -> None:
-        path = self._omh_home / "memory" / "consolidation.json"
-        self._safely(
-            lambda: _write_text(path, json.dumps(handoff, ensure_ascii=False, sort_keys=True))
-        )
+        """Latest brief where a reader looks; every brief where none is lost.
+
+        Consolidation can come due more than once before anyone acts on it -- a
+        turn interval, then a compaction, then a shutdown. Writing only the
+        latest would mean the compaction brief, the one whose material is
+        already gone, is the one overwritten.
+        """
+        directory = self._omh_home / "memory"
+        payload = json.dumps(handoff, ensure_ascii=False, sort_keys=True)
+        self._safely(lambda: _write_text(directory / "consolidation.json", payload))
+        self._safely(lambda: _append_line(directory / "consolidation.jsonl", payload))
 
     def _append_write_journal(
         self,
