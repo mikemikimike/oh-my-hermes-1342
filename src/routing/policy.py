@@ -4771,6 +4771,37 @@ def meets_confidence_threshold(confidence: str, threshold: str) -> bool:
     return _CONFIDENCE_RANK[confidence] >= _CONFIDENCE_RANK[threshold]
 
 
+# Words that mark a message as "I am naming a skill to run", independent of
+# where they sit in the sentence.
+OMH_INVOCATION_MARKERS = frozenset({"omh", "oh-my-hermes", "oh-my-hermes-agent", "ohmyhermes"})
+SKILL_INVOCATION_MARKERS = frozenset({"skill", "workflow", "스킬", "워크플로우", "워크플로"})
+
+# Korean attaches particles to the noun, so a skill named in Korean word order
+# arrives as "wiki를" or "wiki로" rather than as a bare token.
+_KOREAN_PARTICLES = ("으로", "로", "를", "을", "는", "은", "이", "가", "에게", "에", "도", "만")
+
+# A marker alone is not an invocation: "does OMH support skill health
+# dashboards?" and "what is oh-my-hermes?" both name a marker and a skill while
+# asking a question about the catalog. Requiring a cue that means *run it* is
+# what separates the two.
+_INVOCATION_RUN_CUES = (
+    "use",
+    "run",
+    "execute",
+    "invoke",
+    "start",
+    "써줘",
+    "써",
+    "쓰자",
+    "사용",
+    "실행",
+    "돌려",
+    "해줘",
+    "해주세요",
+    "부탁",
+)
+
+
 def explicit_skill_invocation(message: str, names: set[str]) -> str | None:
     stripped = message.strip()
     words = [word.strip(":,").lower() for word in stripped.split()]
@@ -4803,7 +4834,81 @@ def explicit_skill_invocation(message: str, names: set[str]) -> str | None:
             alias = _PREFIXED_BARE_SKILL_ALIASES.get(first, alias)
         if alias in names:
             return None if _explicit_skill_candidate_is_negated(stripped, first, alias) else alias
-    return None
+    return _marker_scoped_skill_invocation(stripped, words, names)
+
+
+def _marker_scoped_skill_invocation(stripped: str, words: list[str], names: set[str]) -> str | None:
+    """Resolve "run this named skill" wherever the name sits in the sentence.
+
+    Every form above assumes English word order: `use omh <skill>` needs the
+    name third, and the prefix and bare-first-word forms need it first. Korean
+    puts the verb last, so `omh wiki 써줘` matched none of them and fell through
+    to trigger scoring -- which is right only when the name happens to be a
+    distinctive token. Measured across all routable skills, that form resolved
+    81 of 92, and `use the <skill> skill` 86 of 92; the failures were the skills
+    with ordinary names, exactly the ones a user cannot rescue by rephrasing.
+
+    Slack and Discord are why this matters. There is no slash-command surface
+    there, so naming the skill in a sentence is the explicit path, and it has to
+    work in the language the sentence is written in.
+
+    Three things are required together, and each one removes a real overroute
+    found while building this:
+
+    - A marker word, so a bare mention is never promoted to an invocation.
+    - A run cue. "does OMH support skill health dashboards?" names a marker and
+      a skill while asking a catalog question; answering it by running the skill
+      is exactly the wrong move.
+    - The name adjacent to the marker. Several skills are named with ordinary
+      words -- loop, plan, team, ask -- so "Run a loop to find and fix OMH
+      router bugs" carries a marker, a cue, and the token `loop` while meaning
+      none of it as an invocation.
+
+    Two names is ambiguity, not a decision, so the router scores it instead.
+    """
+    tokens = [_invocation_token(word) for word in words]
+    marker_positions = {
+        index
+        for index, token in enumerate(tokens)
+        if token in OMH_INVOCATION_MARKERS or token in SKILL_INVOCATION_MARKERS
+    }
+    if not marker_positions or not _contains_run_cue(stripped):
+        return None
+    candidates: list[str] = []
+    for index, token in enumerate(tokens):
+        if not {index - 1, index + 1} & marker_positions:
+            continue
+        name = _resolved_skill_name(token, names)
+        if name and name not in candidates:
+            candidates.append(name)
+    if len(candidates) != 1:
+        return None
+    candidate = candidates[0]
+    return None if _explicit_skill_candidate_is_negated(stripped, candidate) else candidate
+
+
+def _contains_run_cue(message: str) -> bool:
+    # Both sides go through the same fold. `normalized_phrase` decomposes
+    # Hangul to jamo, so a composed literal like "써줘" never matches a folded
+    # message unless it is folded too -- which is how this first shipped
+    # silently doing nothing for every Korean cue.
+    normalized = normalized_phrase(message)
+    return any(normalized_phrase(cue) in normalized for cue in _INVOCATION_RUN_CUES)
+
+
+def _invocation_token(word: str) -> str:
+    token = word.strip(":,.!?~…'\"()[]").lower()
+    for particle in _KOREAN_PARTICLES:
+        if token.endswith(particle) and len(token) > len(particle):
+            return token[: -len(particle)]
+    return token
+
+
+def _resolved_skill_name(token: str, names: set[str]) -> str:
+    if token in names:
+        return token
+    alias = _EXPLICIT_SKILL_ALIASES.get(token, "")
+    return alias if alias in names else ""
 
 
 def _explicit_skill_candidate_is_negated(message: str, *candidates: str) -> bool:

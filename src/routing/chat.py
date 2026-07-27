@@ -1555,6 +1555,7 @@ def _route_chat_message_cached(
     task_card_overrides_explicit = _task_card_overrides_explicit_invocation(
         task_card,
         explicit_prefix=explicit_prefix,
+        explicit_skill=explicit_skill or "",
     )
     if task_card and (not explicit_skill or task_card_overrides_explicit):
         full_recommendations = _prioritize_recommendation(full_recommendations, task_card_recommendation(task_card))
@@ -1959,6 +1960,19 @@ def _maintenance_task_fast_path_decision(
     if _maintenance_task_should_yield_to_catalog(routing_message, task_card):
         return None
     selected_skill = str(task_card.get("selected_workflow_rail", _ROUTER_SKILL))
+    # This card is matched by alias substring, so it also claims the four skills
+    # whose own names contain one -- `codegraph-refresh`, `model-setup`,
+    # `websearch-setup`, `skill-health`. Naming a workflow outranks an alias
+    # found inside that workflow's name, and the same rule is applied to the
+    # slower path in `_task_card_overrides_explicit_invocation`.
+    #
+    # A prefixed message is left alone: `./omh update` and `/omh update` resolve
+    # through the `/omh` alias to `meta-router`, which is the command lane, not
+    # a user naming a different workflow to run instead.
+    if not _has_explicit_invocation_prefix(routing_message):
+        explicit_skill = explicit_skill_invocation(routing_message)
+        if explicit_skill and explicit_skill != selected_skill:
+            return None
     selected_harness = primary_harness_for_skill(selected_skill)
     recommendation = _task_card_fast_path_recommendation(task_card, message)
     reason = str(
@@ -5044,12 +5058,23 @@ def _task_card_overrides_explicit_invocation(
     task_card: dict[str, object] | None,
     *,
     explicit_prefix: bool,
+    explicit_skill: str = "",
 ) -> bool:
     if not isinstance(task_card, dict):
         return False
     task_type = task_card.get("task_type")
     if task_type == "omh_cli_maintenance":
-        return True
+        # The maintenance card is matched by alias substring, so a skill whose
+        # own name contains one is claimed by it: `codegraph-refresh` reads as
+        # `refresh`, `model-setup` and `websearch-setup` as `setup`,
+        # `skill-health` as `health`. Overriding unconditionally meant naming
+        # any of those four ran the maintenance path instead.
+        #
+        # A named workflow outranks an alias found inside its own name. Nothing
+        # is lost for the real commands: of update/setup/doctor/uninstall/
+        # install/list only `doctor` is also a routable skill, and its card
+        # already routes to `doctor`, so the two agree.
+        return not explicit_skill or explicit_skill == task_card.get("selected_workflow_rail")
     if task_type == "router_design_feedback":
         return not explicit_prefix
     return False
