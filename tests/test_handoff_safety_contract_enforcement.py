@@ -154,6 +154,10 @@ PROCESS_SPAWN_ALLOWLIST: dict[str, str] = {
     "src/install/release_smoke_core.py": (
         "release smoke runner; executes the smoke commands an operator asked for."
     ),
+    "src/install/plugin_loader_observation.py": (
+        "`omh doctor` isolated real-Hermes registration probe; reads registered tool/hook names, "
+        "dispatches no agent work, and writes only inside a temporary HERMES_HOME."
+    ),
     "src/plugin_bundle/omh/tools/evidence_tool.py": (
         "allowlisted local verification-command runner; its allowlist is itself gated below."
     ),

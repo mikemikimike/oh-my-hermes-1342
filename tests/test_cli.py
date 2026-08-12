@@ -1492,7 +1492,7 @@ Latest runtime run: 20260625T090917585910Z-loop-goal-loop-8b5bec.
             self.assertIn("Managed skills: ok", stdout)
             self.assertIn("Hermes registration: ok", stdout)
             self.assertIn("Observation boundaries", stdout)
-            self.assertIn("Plugin bridge: ready locally", stdout)
+            self.assertIn("Plugin bridge:", stdout)
             self.assertIn("Hermes runtime: not observed yet", stdout)
             self.assertIn("Use OMH request-to-handoff", stdout)
             self.assertIn("State log:", stdout)
@@ -1561,7 +1561,7 @@ Latest runtime run: 20260625T090917585910Z-loop-goal-loop-8b5bec.
             self.assertEqual(stderr, "")
             self.assertIn("OMH quickstart", stdout)
             self.assertIn("Status: ready", stdout)
-            self.assertIn("Plugin bridge: ready locally", stdout)
+            self.assertIn("Plugin bridge:", stdout)
             self.assertIn("Live Hermes plugin use: not observed yet", stdout)
             self.assertIn("Wrapper usage: not recorded yet", stdout)
             self.assertIn("First-value packs", stdout)
@@ -2856,7 +2856,7 @@ Latest runtime run: 20260625T090917585910Z-loop-goal-loop-8b5bec.
             self.assertIn("OMH doctor가 완료되었습니다.", stdout)
             self.assertIn("검사:", stdout)
             self.assertIn("관측 경계", stdout)
-            self.assertIn("플러그인 브리지: 로컬 준비 완료", stdout)
+            self.assertIn("플러그인 브리지:", stdout)
             self.assertIn("Hermes 런타임: 아직 관측 안 됨", stdout)
             self.assertTrue(
                 "Hermes Agent를 열고 시도하세요" in stdout

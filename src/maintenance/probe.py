@@ -551,7 +551,9 @@ def probe_capabilities(paths: OmhPaths, *, include_parity: bool = False, include
                 "available" if plugin["plugin_register_smoke"] else ("missing" if plugin["plugin_dir_installed"] else "unknown"),
                 str(paths.hermes_plugin_dir),
                 (
-                    f"Installed OMH plugin registers tools={plugin['registered_tools']} hooks={plugin['registered_hooks']}"
+                    "Installed OMH plugin register() is callable with OMH's fake context: "
+                    f"tools={plugin['registered_tools']} hooks={plugin['registered_hooks']}; "
+                    "the real Hermes loader is not exercised by this capability"
                     if plugin["plugin_register_smoke"]
                     else _plugin_smoke_message(plugin)
                 ),

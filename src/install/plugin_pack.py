@@ -12,7 +12,7 @@ from ..version import __version__
 from ..hashutil import sha256_file, sha256_text
 from ..local_store import atomic_write_json, ensure_dir, read_json_object, utc_now
 from ..paths import OmhPaths
-from ..plugin_bundle.omh.metadata import PROVIDED_TOOLS, REQUIRED_HOOKS
+from ..plugin_bundle.omh.metadata import PROVIDED_HOOKS, PROVIDED_TOOLS, REQUIRED_HOOKS
 
 PLUGIN_NAME = "omh"
 PLUGIN_SCHEMA_VERSION = "plugin_distribution/v1"
@@ -86,6 +86,7 @@ def inspect_plugin_bundle(paths: OmhPaths) -> dict[str, Any]:
     bundled_file_map = _record_file_map(bundled_records)
     plugin_yaml = target / "plugin.yaml"
     init_py = target / "__init__.py"
+    conformance = _plugin_manifest_conformance(plugin_yaml)
     errors: list[str] = []
     if target.exists() and not target.is_dir():
         errors.append(f"{target} is not a directory")
@@ -101,6 +102,8 @@ def inspect_plugin_bundle(paths: OmhPaths) -> dict[str, Any]:
         errors.append(f"{plugin_yaml} is missing")
     if target.exists() and not init_py.exists():
         errors.append(f"{init_py} is missing")
+    if target.exists() and not conformance["ok"]:
+        errors.extend(f"plugin.yaml conformance: {field}" for field in conformance["invalid_fields"])
     smoke = _register_smoke(target) if target.exists() and plugin_yaml.exists() and init_py.exists() else {}
     import_smoke = bool(smoke.get("import_smoke", False))
     register_smoke = bool(smoke.get("register_smoke", False))
@@ -126,18 +129,84 @@ def inspect_plugin_bundle(paths: OmhPaths) -> dict[str, Any]:
         "plugin_manifest_current": manifest_current,
         "plugin_bundle_stale": target.exists() and manifest_valid and not manifest_current,
         "plugin_yaml_present": plugin_yaml.exists(),
+        "plugin_manifest_conformance": conformance,
         "plugin_import_smoke": import_smoke,
         "plugin_register_smoke": register_smoke,
         "registered_tools": smoke.get("registered_tools", []),
         "registered_hooks": smoke.get("registered_hooks", []),
         "missing_registered_tools": missing_tools,
         "missing_registered_hooks": missing_hooks,
-        "plugin_distribution_ready": bool(target.exists() and manifest_current and import_smoke and register_smoke),
+        "plugin_distribution_ready": bool(
+            target.exists()
+            and manifest_current
+            and conformance["ok"]
+            and import_smoke
+            and register_smoke
+        ),
         "plugin_runtime_observed": False,
         "requires_hermes_plugin_enable": target.exists(),
         "enable_hint": PLUGIN_ENABLE_HINT,
         "errors": errors,
     }
+
+
+def _plugin_manifest_conformance(plugin_yaml: Path) -> dict[str, Any]:
+    # Hermes may classify a memory-provider bundle without an explicit kind as
+    # exclusive and skip its general tools/hooks loader. Keep this field
+    # explicit and compare the advertised surface with OMH's runtime metadata.
+    values = _manifest_values(plugin_yaml)
+    kind = values.get("kind", "")
+    declared_tools = _manifest_list(plugin_yaml, "provides_tools")
+    declared_hooks = _manifest_list(plugin_yaml, "provides_hooks")
+    invalid_fields: list[str] = []
+    if values.get("name", "") != PLUGIN_NAME:
+        invalid_fields.append("name")
+    if kind != "standalone":
+        invalid_fields.append("kind")
+    if sorted(declared_tools) != sorted(PROVIDED_TOOLS):
+        invalid_fields.append("provides_tools")
+    if sorted(declared_hooks) != sorted(PROVIDED_HOOKS):
+        invalid_fields.append("provides_hooks")
+    return {
+        "ok": not invalid_fields,
+        "name": values.get("name", ""),
+        "kind": kind,
+        "declared_tools": declared_tools,
+        "declared_hooks": declared_hooks,
+        "invalid_fields": invalid_fields,
+    }
+
+
+def _manifest_values(plugin_yaml: Path) -> dict[str, str]:
+    try:
+        lines = plugin_yaml.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    values: dict[str, str] = {}
+    for line in lines:
+        if line.startswith((" ", "\t")) or ":" not in line:
+            continue
+        key, raw_value = line.split(":", 1)
+        values[key.strip()] = raw_value.strip().strip("\"'")
+    return values
+
+
+def _manifest_list(plugin_yaml: Path, key: str) -> list[str]:
+    try:
+        lines = plugin_yaml.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    values: list[str] = []
+    active = False
+    for line in lines:
+        if not line.startswith((" ", "\t")):
+            active = line.strip() == f"{key}:"
+            continue
+        if active:
+            item = line.strip()
+            if item.startswith("- "):
+                values.append(item[2:].strip().strip("\"'"))
+    return values
 
 
 def bundled_plugin_records() -> list[dict[str, str]]:

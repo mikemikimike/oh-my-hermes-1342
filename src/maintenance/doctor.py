@@ -19,6 +19,7 @@ from ..local_store import can_write_dir
 from ..install.guidance_projection import build_guidance_projection_status
 from ..install.hook_integrity import HOOK_HOST_TARGET, VALID_HOOK_EVENTS, build_hook_integrity_status
 from ..install.identity_conflicts import build_identity_conflict_report
+from ..install.plugin_loader_observation import observe_real_loader_registration
 from ..manifest import local_modifications, read_manifest
 from ..paths import OmhPaths
 from ..plugin_bundle.omh.memory_dreaming import read_dreaming_state, read_latest_consolidation
@@ -199,6 +200,12 @@ def run_doctor(paths: OmhPaths) -> list[Check]:
         )
     )
     plugin = inspect_plugin_bundle(paths)
+    manifest_conformance = plugin["plugin_manifest_conformance"]
+    loader_observation = (
+        observe_real_loader_registration(paths.hermes_plugin_dir)
+        if plugin["plugin_dir_installed"]
+        else None
+    )
     latest_plugin_observation, plugin_observation_errors = latest_plugin_host_observation(paths)
     latest_plugin_readiness = ""
     if latest_plugin_observation:
@@ -237,16 +244,43 @@ def run_doctor(paths: OmhPaths) -> list[Check]:
                     next_action="" if plugin["plugin_import_smoke"] else _plugin_bridge_next_action(plugin),
                 ),
                 Check(
+                    "plugin_manifest_conformance",
+                    bool(manifest_conformance["ok"]),
+                    (
+                        f"plugin.yaml declares kind={manifest_conformance['kind']} and "
+                        f"tools={len(manifest_conformance['declared_tools'])} "
+                        f"hooks={len(manifest_conformance['declared_hooks'])}"
+                        if manifest_conformance["ok"]
+                        else (
+                            "plugin.yaml does not match the Hermes standalone loader contract: "
+                            + ", ".join(manifest_conformance["invalid_fields"])
+                        )
+                    ),
+                    remediation=(
+                        ""
+                        if manifest_conformance["ok"]
+                        else "Run `omh setup --force` to restore the managed plugin manifest."
+                    ),
+                    next_action=(
+                        ""
+                        if manifest_conformance["ok"]
+                        else "Run `omh setup --force`, then `omh doctor` again."
+                    ),
+                ),
+                Check(
                     "plugin_register_smoke",
                     bool(plugin["plugin_register_smoke"]),
                     (
-                        f"registered tools={plugin['registered_tools']} hooks={plugin['registered_hooks']}"
+                        "register() callable with OMH's fake context: "
+                        f"tools={plugin['registered_tools']} hooks={plugin['registered_hooks']}; "
+                        "the real Hermes loader is checked separately"
                         if plugin["plugin_register_smoke"]
                         else _plugin_bridge_message(plugin)
                     ),
                     remediation="" if plugin["plugin_register_smoke"] else _plugin_bridge_remediation(plugin),
                     next_action="" if plugin["plugin_register_smoke"] else _plugin_bridge_next_action(plugin),
                 ),
+                _plugin_loader_observation_check(loader_observation),
                 Check(
                     "plugin_runtime_observed",
                     True,
@@ -304,6 +338,39 @@ def run_doctor(paths: OmhPaths) -> list[Check]:
             )
         )
     return checks
+
+
+def _plugin_loader_observation_check(observation: dict[str, object] | None) -> Check:
+    if not observation or not observation.get("observed"):
+        reason = str((observation or {}).get("reason", "plugin_bundle_not_installed"))
+        return Check(
+            "plugin_loader_observed",
+            True,
+            (
+                f"real Hermes loader not observed ({reason}); "
+                "fake-context registration does not prove host registration"
+            ),
+            severity="warning",
+            observed=False,
+        )
+    tools = observation.get("registered_tools", [])
+    hooks = observation.get("registered_hooks", [])
+    if observation.get("ok"):
+        return Check(
+            "plugin_loader_observed",
+            True,
+            f"real Hermes loader registered tools={tools} hooks={hooks} in an isolated HERMES_HOME",
+            observed=True,
+        )
+    error = str(observation.get("error") or observation.get("reason") or "registration_mismatch")
+    return Check(
+        "plugin_loader_observed",
+        False,
+        f"real Hermes loader registration mismatch: {error}; tools={tools} hooks={hooks}",
+        remediation="Run `omh setup --force`, then reload Hermes and run `omh doctor` again.",
+        next_action="Run `omh setup --force`, reload Hermes, then run `omh doctor` again.",
+        observed=True,
+    )
 
 
 def _memory_consolidation_check(paths: OmhPaths) -> Check:

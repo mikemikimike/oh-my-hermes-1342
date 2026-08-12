@@ -2018,6 +2018,7 @@ def _doctor_observation_boundary_lines(checks: list[object], *, language: str) -
     lines: list[str] = []
     plugin_bundle = check_map.get("plugin_bundle")
     plugin_register = check_map.get("plugin_register_smoke")
+    plugin_loader = check_map.get("plugin_loader_observed")
     plugin_runtime = check_map.get("plugin_runtime_observed")
 
     if plugin_register:
@@ -2027,6 +2028,18 @@ def _doctor_observation_boundary_lines(checks: list[object], *, language: str) -
             lines.append(tr(language, "doctor_plugin_bridge_needs_attention"))
     elif plugin_bundle:
         lines.append(tr(language, "doctor_plugin_bridge_not_installed"))
+
+    if plugin_loader:
+        lines.append(
+            tr(
+                language,
+                (
+                    "doctor_plugin_loader_observed"
+                    if plugin_loader.get("observed") and str(plugin_loader.get("severity", "")) == "ok"
+                    else "doctor_plugin_loader_not_observed"
+                ),
+            )
+        )
 
     if plugin_runtime:
         if plugin_runtime.get("observed") and str(plugin_runtime.get("severity", "")) == "ok":

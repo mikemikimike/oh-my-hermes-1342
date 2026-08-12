@@ -568,10 +568,39 @@ writing unreviewed updates.
 
 ## Dreaming
 
-Dreaming has only `off` and `reminder` modes. It prepares a reminder and
-metadata-only evidence; it never invokes a model, consolidates, retires,
-restores, or prunes. Standing reminder reasons include
-`stale_review_required` and `expired_volatile_records`.
+Dreaming has only `off` and `reminder` modes. The reminder scheduler runs
+automatically at five points:
+
+| hook | trigger | purpose |
+| --- | --- | --- |
+| `on_turn_start` | `turn` | Evaluate when the interval is due (five turns by default). |
+| `on_pre_compress` | `compaction` | Preserve a reminder before compression discards messages. |
+| `on_session_end` | `session_end` | Review what a productive session may have made worth keeping. |
+| `shutdown` | `shutdown` | Take the final opportunity before the process exits. |
+| `initialize` | `session_start_recovery` | Recover when the prior session ended without consolidation. |
+
+The brief nominates duplicate clusters, records at or near their deadline,
+and working-context headroom below the configured floor. Standing reasons also
+include `stale_review_required` and `expired_volatile_records`. An unchanged
+standing condition is suppressed until its value changes, rather than being
+restated every time the scheduler runs. A record OMH cannot source is never an
+eviction candidate: absence of provenance is not evidence that the record is
+wrong.
+
+The ranking inputs do not expand eligibility or establish truth:
+
+- Pins guarantee inclusion among eligible records; they never override
+  expiry, scope, perspective, or review eligibility.
+- Attention tiers control how much working context a record may occupy, not
+  whether it is true.
+- `approved_manual` carries 100% veracity weight and `approved_auto_safe`
+  carries 90%; an unknown approval mode fails closed to the lower weight.
+- Age tiers only degrade old records within an equal relevance rank.
+- Delivery usage uses saturating buckets, so repeated use cannot compound into
+  a permanent head start.
+
+Dreaming prepares a reminder and metadata-only evidence. It never invokes a
+model or performs consolidation, retirement, restore, or prune.
 
 ## Prepared Context Boundary
 
