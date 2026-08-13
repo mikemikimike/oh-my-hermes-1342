@@ -15,6 +15,7 @@ window.OMH_I18N = {
     "nav.workflows": { en: "Workflows", ko: "워크플로", ja: "ワークフロー", zh: "工作流" },
     "nav.executors": { en: "Executors", ko: "실행 주체", ja: "実行エージェント", zh: "执行方" },
     "nav.capabilities": { en: "Capabilities", ko: "역량", ja: "ケイパビリティ", zh: "能力" },
+    "nav.routing": { en: "Routing", ko: "라우팅", ja: "ルーティング", zh: "路由" },
     "nav.memory": { en: "Memory", ko: "메모리", ja: "メモリ", zh: "记忆" },
     "nav.install": { en: "Install", ko: "설치", ja: "インストール", zh: "安装" },
     "nav.docs": { en: "Docs", ko: "문서", ja: "ドキュメント", zh: "文档" },
@@ -485,12 +486,124 @@ window.OMH_I18N = {
     "install.tab.win": { en: "Windows", ko: "Windows", ja: "Windows", zh: "Windows" },
     "install.prompt.label": { en: "prompt for your agent", ko: "에이전트용 프롬프트", ja: "エージェント用プロンプト", zh: "给智能体的提示词" },
 
+    /* -------------------------------------------------------------- routing */
+    "route.kicker": { en: "Model routing", ko: "모델 라우팅", ja: "モデル・ルーティング", zh: "模型路由" },
+    "route.title": {
+      en: "Set the model per kind of work.",
+      ko: "작업 종류마다 모델을 지정합니다.",
+      ja: "作業の種類ごとにモデルを指定します。",
+      zh: "按工作类型指定模型。"
+    },
+    "route.lead": {
+      en: "Eight editable categories. Missing models are skipped, not fatal.",
+      ko: "편집 가능한 8개 카테고리. 없는 모델은 건너뛸 뿐, 설치를 막지 않습니다.",
+      ja: "編集可能な 8 カテゴリ。持っていないモデルはスキップされ、失敗にはなりません。",
+      zh: "八个可编辑类别。缺少的模型只会被跳过，不会导致失败。"
+    },
+    "route.edit.tag": { en: "Editable", ko: "편집 가능", ja: "編集可能", zh: "可编辑" },
+    "route.edit.title": {
+      en: "Your order, not ours.",
+      ko: "우선순위는 사용자가 정합니다.",
+      ja: "優先順位は利用者が決めます。",
+      zh: "顺序由你决定。"
+    },
+    "route.edit.body": {
+      en: "Each category is an ordered candidate chain. Your override replaces the chains it names and leaves the rest alone.",
+      ko: "각 카테고리는 순서가 있는 후보 목록입니다. 오버라이드는 지정한 목록만 교체하고 나머지는 그대로 둡니다.",
+      ja: "各カテゴリは順序付きの候補チェーンです。オーバーライドは指定したチェーンだけを置き換え、他はそのまま残します。",
+      zh: "每个类别都是有序候选链。覆盖文件只替换它指名的链，其余保持不变。"
+    },
+    "route.flex.tag": { en: "Flexible", ko: "유연함", ja: "柔軟", zh: "灵活" },
+    "route.flex.title": {
+      en: "You do not need every model.",
+      ko: "모든 모델을 갖출 필요는 없습니다.",
+      ja: "すべてのモデルを揃える必要はありません。",
+      zh: "你不需要拥有全部模型。"
+    },
+    "route.flex.body": {
+      en: "A candidate you have not configured is skipped and the next eligible one is selected. No eligible candidate is recorded plainly and never blocks the install.",
+      ko: "설정하지 않은 후보는 건너뛰고 다음 후보를 선택합니다. 적합한 후보가 없으면 그대로 기록될 뿐, 설치를 막지 않습니다.",
+      ja: "未設定の候補はスキップされ、次の候補が選ばれます。該当候補がない場合はそのまま記録され、インストールを妨げません。",
+      zh: "未配置的候选会被跳过并选择下一个。若没有可用候选，会如实记录，且不会阻断安装。"
+    },
+    "route.state.resolved": {
+      en: "A confirmed model was selected.",
+      ko: "확인된 모델이 선택되었습니다.",
+      ja: "確認済みのモデルが選択されました。",
+      zh: "已选中一个确认可用的模型。"
+    },
+    "route.state.choice": {
+      en: "The model you named explicitly is unavailable. Nothing is substituted.",
+      ko: "직접 지정한 모델을 쓸 수 없습니다. 임의로 대체하지 않습니다.",
+      ja: "明示指定したモデルが利用できません。勝手な代替は行いません。",
+      zh: "你明确指定的模型不可用，不会自动替换。"
+    },
+    "route.state.unconfigured": {
+      en: "No eligible candidate. Setup continues.",
+      ko: "적합한 후보가 없습니다. 설치는 계속됩니다.",
+      ja: "該当する候補がありません。セットアップは続行します。",
+      zh: "没有符合条件的候选。安装继续。"
+    },
+    "route.owner.tag": { en: "Owners", ko: "소유 주체", ja: "担当", zh: "归属" },
+    "route.owner.title": {
+      en: "Hermes native, or external Maestro.",
+      ko: "Hermes 네이티브 또는 외부 Maestro.",
+      ja: "Hermes ネイティブか、外部の Maestro か。",
+      zh: "Hermes 原生，或外部 Maestro。"
+    },
+    "route.owner.body": {
+      en: "Hermes-native work stays with Hermes and its own config and auth commands. External owners are coordinated by Maestro, which prepares and reports but never executes.",
+      ko: "Hermes 네이티브 작업은 Hermes와 그 자체의 config·auth 명령이 담당합니다. 외부 소유 주체는 Maestro가 조율하며, Maestro는 준비와 보고만 하고 실행하지 않습니다.",
+      ja: "Hermes ネイティブの作業は Hermes 自身の config・auth コマンドが担います。外部の担当は Maestro が調整し、Maestro は準備と報告のみで実行はしません。",
+      zh: "Hermes 原生工作交由 Hermes 及其自身的 config、auth 命令处理。外部归属由 Maestro 协调，Maestro 只负责准备与汇报，从不执行。"
+    },
+    "route.owner.hermes": { en: "hermes native", ko: "hermes 네이티브", ja: "hermes ネイティブ", zh: "hermes 原生" },
+    "route.owner.maestro": { en: "maestro external", ko: "maestro 외부", ja: "maestro 外部", zh: "maestro 外部" },
+    "route.family.tag": { en: "Families", ko: "모델 계열", ja: "モデル系統", zh: "模型系列" },
+    "route.family.title": {
+      en: "Qwen, Gemini, Grok, Kimi.",
+      ko: "Qwen, Gemini, Grok, Kimi.",
+      ja: "Qwen、Gemini、Grok、Kimi。",
+      zh: "Qwen、Gemini、Grok、Kimi。"
+    },
+    "route.family.body": {
+      en: "Chains name model families, never a single vendor. Declaring the X-platform domain notes the Grok family advisorily, and your explicit choice always wins.",
+      ko: "후보 목록은 특정 벤더가 아니라 모델 계열을 가리킵니다. X 플랫폼 도메인을 선언하면 Grok 계열을 참고용으로 안내할 뿐이며, 사용자의 명시적 선택이 언제나 우선합니다.",
+      ja: "チェーンは単一ベンダーではなくモデル系統を指します。X プラットフォーム領域を宣言すると Grok 系統が参考として示されますが、明示的な選択が常に優先されます。",
+      zh: "候选链指向模型系列，而非单一厂商。声明 X 平台领域只会以参考方式提示 Grok 系列，你的明确选择始终优先。"
+    },
+    "route.note": {
+      en: "Shipped order is editorial, not a benchmark. OMH prepares routing metadata and never invokes a model.",
+      ko: "기본 순서는 편집상의 선택일 뿐 벤치마크가 아닙니다. OMH는 라우팅 메타데이터만 준비하고 모델을 직접 호출하지 않습니다.",
+      ja: "同梱の順序は編集上の選択であり、ベンチマークではありません。OMH はルーティング・メタデータを準備するだけで、モデルを呼び出しません。",
+      zh: "内置顺序是编辑判断，不是基准测试。OMH 只准备路由元数据，从不调用模型。"
+    },
+    "route.cta": {
+      en: "Read the routing setup guide",
+      ko: "라우팅 설정 가이드 읽기",
+      ja: "ルーティング設定ガイドを読む",
+      zh: "阅读路由设置指南"
+    },
+    "install.routing.note": {
+      en: "Setup records which models are reachable here. Routing order stays editable afterwards.",
+      ko: "설치 과정에서 이 컴퓨터에서 쓸 수 있는 모델이 기록됩니다. 라우팅 순서는 그 뒤에도 계속 편집할 수 있습니다.",
+      ja: "セットアップはこの環境で利用できるモデルを記録します。ルーティング順序はその後も編集できます。",
+      zh: "安装会记录本机可用的模型。路由顺序之后仍可编辑。"
+    },
+    "install.routing.link": {
+      en: "Model routing setup",
+      ko: "모델 라우팅 설정",
+      ja: "モデル・ルーティング設定",
+      zh: "模型路由设置"
+    },
+
     /* ------------------------------------------------------------- footer */
     "footer.product": { en: "Product", ko: "제품", ja: "プロダクト", zh: "产品" },
     "footer.resources": { en: "Resources", ko: "리소스", ja: "リソース", zh: "资源" },
     "footer.community": { en: "Community", ko: "커뮤니티", ja: "コミュニティ", zh: "社区" },
     "footer.workflows": { en: "Workflow reference", ko: "워크플로 레퍼런스", ja: "ワークフロー・リファレンス", zh: "工作流参考" },
     "footer.architecture": { en: "Architecture", ko: "아키텍처", ja: "アーキテクチャ", zh: "架构" },
+    "footer.routing": { en: "Model routing", ko: "모델 라우팅", ja: "モデル・ルーティング", zh: "模型路由" },
     "footer.changelog": { en: "Changelog", ko: "변경 이력", ja: "変更履歴", zh: "更新日志" },
     "footer.issues": { en: "Issues", ko: "이슈", ja: "Issue", zh: "问题反馈" },
     "footer.releases": { en: "Releases", ko: "릴리스", ja: "リリース", zh: "版本发布" },

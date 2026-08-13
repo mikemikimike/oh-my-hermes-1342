@@ -31,6 +31,10 @@ from omh.routing.coding_route_actions import (
     resolve_coding_route_decision,
 )
 from omh.routing.localization import normalized_phrase
+from omh.routing.owner_preference import (
+    empty_owner_preference_state,
+    record_accepted_explicit_choice,
+)
 from omh.wrapper.contract import build_chat_interaction_payload
 
 
@@ -62,6 +66,18 @@ CUSTOMER_SIGNAL_MESSAGES: tuple[str, ...] = (
 
 def _decision(message: str, **kwargs: str):
     return resolve_coding_route_decision(normalized_phrase(message), **kwargs)
+
+
+def _learned_owner_state(owner: str = "codex") -> dict[str, object]:
+    state = empty_owner_preference_state()
+    for index in range(3):
+        state = record_accepted_explicit_choice(
+            state,
+            route_family="ulw-coding-delivery",
+            selected_owner=owner,
+            occurred_at=f"2026-08-13T00:00:0{index + 1}Z",
+        )
+    return state
 
 
 def _load_standalone_bundle_awareness():
@@ -257,6 +273,89 @@ class CodingRouteActionGuardTests(unittest.TestCase):
 
                 self.assertNotEqual(decision.next_action, NAMED_EXECUTOR_NEXT_ACTION)
                 self.assertEqual(decision.selected_owner, "")
+
+    def test_owner_learning_asks_then_exposes_reversible_fourth_default(self) -> None:
+        state = empty_owner_preference_state()
+
+        for index in range(3):
+            decision = _decision(
+                "implement the dark mode toggle and open a pr",
+                owner_preference_state=state,
+            )
+            self.assertEqual(decision.next_action, USER_CHOICE_NEXT_ACTION)
+            self.assertEqual(decision.owner_preference_action, "ask_explicit_owner")
+            self.assertEqual(decision.owner_preference_evidence_count, index)
+            state = record_accepted_explicit_choice(
+                state,
+                route_family="ulw-coding-delivery",
+                selected_owner="codex",
+                occurred_at=f"2026-08-13T00:00:0{index + 1}Z",
+            )
+
+        fourth = _decision(
+            "implement the dark mode toggle and open a pr",
+            owner_preference_state=state,
+        )
+
+        self.assertEqual(fourth.next_action, RECORDED_OWNER_NEXT_ACTION)
+        self.assertEqual(fourth.source, "learned_owner_preference")
+        self.assertEqual(fourth.selected_owner, "codex")
+        self.assertEqual(fourth.owner_preference_route_family, "ulw-coding-delivery")
+        self.assertEqual(fourth.owner_preference_evidence_count, 3)
+        self.assertTrue(fourth.owner_preference_override_available)
+        self.assertTrue(fourth.owner_preference_reset_available)
+
+    def test_explicit_owner_and_safety_gates_outrank_learned_default(self) -> None:
+        state = _learned_owner_state()
+        named = _decision(
+            "have claude code fix the login bug",
+            owner_preference_state=state,
+        )
+        self.assertEqual(named.next_action, NAMED_EXECUTOR_NEXT_ACTION)
+        self.assertEqual(named.selected_owner, "claude-code")
+        self.assertEqual(named.owner_preference_reason_code, "owner_named_in_request")
+
+        cases = (
+            (
+                "use codex or claude code to fix the login bug",
+                {},
+                "multiple_owners_named",
+            ),
+            (
+                "implement this and merge to main",
+                {},
+                "authority_requires_choice",
+            ),
+            (
+                "implement the dark mode toggle and open a pr",
+                {"owner_ready": False},
+                "owner_unready",
+            ),
+            (
+                "implement the dark mode toggle and open a pr",
+                {"capability_fit": False},
+                "capability_gap",
+            ),
+        )
+        for message, flags, reason_code in cases:
+            with self.subTest(reason_code=reason_code):
+                decision = _decision(
+                    message,
+                    owner_preference_state=state,
+                    **flags,
+                )
+                self.assertEqual(decision.next_action, USER_CHOICE_NEXT_ACTION)
+                self.assertTrue(decision.choice_required)
+                self.assertEqual(decision.owner_preference_reason_code, reason_code)
+
+        bypass = _decision(
+            "summarize this paragraph",
+            owner_preference_state=state,
+            coding_delivery=False,
+        )
+        self.assertEqual(bypass.owner_preference_action, "bypass_owner_learning")
+        self.assertEqual(bypass.owner_preference_reason_code, "non_coding_workflow")
+        self.assertEqual(bypass.selected_owner, "")
 
     def test_embedded_pi_family_substrings_never_name_the_omo_runtime_owner(self) -> None:
         # Word-boundary guard: as raw substrings "promo runtime" contains

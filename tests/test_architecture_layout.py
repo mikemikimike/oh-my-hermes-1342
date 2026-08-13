@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import tomllib
 import unittest
 
 from _local_package import load_local_package
@@ -39,6 +40,14 @@ from omh.wrapper import sessions as wrapper_sessions_module
 
 
 class ArchitectureLayoutTests(unittest.TestCase):
+    def test_maestro_subpackage_is_in_wheel_package_map(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        config = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+        setuptools = config["tool"]["setuptools"]
+
+        self.assertIn("omh.coding.maestro", setuptools["packages"])
+        self.assertEqual(setuptools["package-dir"]["omh.coding.maestro"], "src/coding/maestro")
+
     def test_src_root_uses_only_package_directories(self) -> None:
         src_root = Path(__file__).resolve().parents[1] / "src"
 

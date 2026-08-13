@@ -103,6 +103,133 @@ full workflow picker. This keeps the first explanation conversational while
 still exposing `omh_context_brief/v1` for adapters that want structured lanes,
 rules, and boundaries.
 
+## Guided Model Setup
+
+Normal users can ask Hermes **set up my models**. The CLI in this section is an
+**agent/maintainer** configuration and diagnosis surface, not a prerequisite for
+installing or using OMH.
+
+The guided flow is deliberately staged:
+
+1. **Inspect.** `omh setup --model-setup` scans bounded, allowlisted metadata
+   roots for Codex, Claude Code, Hermes, OpenCode, OMO, `pi`, and `senpi`.
+   `pi` and `senpi` are host CLIs in the OMO runtime family. Discovery does not
+   read auth files, provider responses, prompts, transcripts, or tool results.
+2. **Confirm active.** Prior session/config metadata is only `observed_before`.
+   A model becomes `confirmed_active` for this flow only through an explicit
+   `--confirm-model PROVIDER/MODEL` choice. This is still user-declared local
+   configuration, not entitlement, credential validity, quota, or execution.
+3. **Preview.** Repeated `--model-alias ALIAS=MODEL` values produce exact Hermes
+   `model.aliases` changes and a digest-bound preview. Existing aliases remain
+   user-owned; collisions fail closed unless separately allowed.
+4. **Apply.** No preview writes. An apply requires both
+   `--apply-model-config` and the preview's `--model-config-digest`; an
+   interactive flow asks after showing the preview. Hermes' own `config set`
+   command owns the mutation.
+5. **Verify.** The adapter re-inspects the native Hermes alias and reports a
+   verified receipt. Preview, apply, and verification remain separate states.
+
+Agent/maintainer preview example:
+
+```sh
+omh setup --model-setup \
+  --confirm-model openrouter/qwen3-coder \
+  --confirm-model google/gemini-3.1-pro \
+  --model-alias main=openrouter/qwen3-coder \
+  --no-interactive --json
+```
+
+Show the resulting `steps.model_activation.preview.changes` and
+`config_digest` to the user. Apply only after approval by repeating the same
+arguments with:
+
+```sh
+--apply-model-config --model-config-digest <preview-digest>
+```
+
+An explicit unavailable model returns `choice_required` and never silently
+falls through. A missing recommended model is different: setup remains usable
+and ordered recommendation chains skip missing entries in favor of a confirmed
+compatible alternative. Qwen and Gemini therefore remain valid user-selected
+alternatives even when they are not shipped category heads.
+
+### Editable recommendation categories
+
+The shipped catalog is editorial policy, not benchmark output:
+
+| Surface | Shipped editable order |
+| --- | --- |
+| Hermes `main` suggestion | Kimi K3, Claude Opus 5, Claude Fable 5, GPT-5.6 Sol, GPT-5.6 Terra |
+| `ultrabrain` | GPT-5.6 Sol (`xhigh`) |
+| `deep` | GPT-5.6 Terra (`high`) |
+| `unspecified-high` | Kimi K3, Claude Opus 5 |
+| `unspecified-low` | GLM 5.2, GLM 5.2 Ultrafast |
+| `visual-engineering` | Claude Fable 5, Kimi K3 |
+| `quick`, `writing`, `artistry` | No shipped default; choose a confirmed compatible model |
+| `x_platform_data` affinity | Grok, Kimi K3, Gemini |
+
+The X/Grok row is a static, editable affinity for work explicitly declaring X
+platform data. It is not a measured capability, performance, or availability
+claim, never removes another candidate, and never overrides an explicit user
+choice. CCAPI for Claude and Apitopia for Kimi are preferred provider-family
+metadata only. They are not bundled or probed integrations and are considered
+only when the user declares the corresponding local route active. OMH never
+copies their tokens or keys.
+
+Agents and maintainers can replace named chains with a secret-free
+`model_recommendation_overrides/v1` JSON file. Only the existing category,
+`main` role, and `x_platform_data` domain keys are accepted; named chains
+replace rather than merge with shipped order. For example:
+
+```json
+{
+  "schema_version": "model_recommendation_overrides/v1",
+  "categories": {
+    "deep": [
+      {
+        "model_alias": "qwen3-coder",
+        "model_family": "qwen",
+        "preferred_provider_families": ["openrouter"],
+        "reasoning_effort": "high",
+        "reasoning": "Local editorial choice for this installation."
+      }
+    ]
+  }
+}
+```
+
+The agent/maintainer routing preview accepts it with
+`omh coding model-route --executor hermes --from-inventory --recommendations
+/path/to/overrides.json --json`. Override files cannot carry credential,
+secret, token, password, or provider-configuration fields.
+
+### Hermes-native and Maestro ownership
+
+Hermes-native routing resolves a reviewed alias/provider/model binding and
+keeps native skill, Kanban, and `delegate_task` execution in Hermes. It does
+not cross Maestro.
+
+Maestro is the external handoff boundary for Codex, Claude Code, OMO, OMC, OMX,
+and generic profiles. It projects an ordered eligible recommendation chain,
+coordinates existing prepared handoff/status adapters, and rejects Hermes as an
+external profile. Maestro does not execute work, write Hermes aliases, own
+credentials, or convert a prepared handoff into observed evidence. External
+owner observations must still be recorded by the selected executor or wrapper.
+
+For offline diagnosis, agents and maintainers can run:
+
+```sh
+omh coding model-routing status
+omh coding model-routing status --json
+```
+
+The report separates confirmed models from discovered-only metadata, Hermes
+aliases from Maestro category readiness, and owner-learning state from both.
+Its missing recommendation heads are advisory. To clear only one learned owner
+preference, an agent/maintainer may run `omh coding model-routing reset
+--route-family <id>`; this does not alter aliases, recommendations, providers,
+or credentials.
+
 ## Windows
 
 OMH runs natively on Windows. The full test suite is an enforcing CI gate on

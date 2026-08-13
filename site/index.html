@@ -68,6 +68,7 @@
       <nav class="nav nav--glass" aria-label="Primary navigation">
         <a href="#workflows" data-i18n="nav.workflows">Workflows</a>
         <a href="#executors" data-i18n="nav.executors">Executors</a>
+        <a href="#routing" data-i18n="nav.routing">Routing</a>
         <a href="#capabilities" data-i18n="nav.capabilities">Capabilities</a>
         <a href="#memory" data-i18n="nav.memory">Memory</a>
         <a href="#install" data-i18n="nav.install">Install</a>
@@ -241,6 +242,84 @@
             <span class="logo-chip"><svg viewBox="0 0 24 24"><use href="#logo-moonshotai"></use></svg>Kimi</span>
             <span class="logo-chip"><svg viewBox="0 0 24 24"><use href="#logo-mistralai"></use></svg>Mistral</span>
           </div>
+        </div>
+      </section>
+
+      <!-- ========================================================= ROUTING -->
+      <section class="section" id="routing" aria-labelledby="routing-title">
+        <div class="section__head section__head--center" data-reveal>
+          <p class="kicker" data-i18n="route.kicker">Model routing</p>
+          <h2 id="routing-title" data-i18n="route.title">Set the model per kind of work.</h2>
+          <p class="section__lead" data-i18n="route.lead">Eight editable categories. Missing models are skipped, not fatal.</p>
+          <p class="exec-route"><code>routing-model-setup</code></p>
+        </div>
+
+        <div class="route-grid">
+          <article class="glass-card route-card" data-reveal>
+            <p class="route-card__tag" data-i18n="route.edit.tag">Editable</p>
+            <h3 data-i18n="route.edit.title">Your order, not ours.</h3>
+            <p data-i18n="route.edit.body">Each category is an ordered candidate chain. Your override replaces the chains it names and leaves the rest alone.</p>
+            <ul class="route-chips" aria-label="Work categories">
+              <li>ultrabrain</li>
+              <li>deep</li>
+              <li>unspecified-high</li>
+              <li>unspecified-low</li>
+              <li>quick</li>
+              <li>writing</li>
+              <li>visual-engineering</li>
+              <li>artistry</li>
+            </ul>
+          </article>
+
+          <article class="glass-card route-card" data-reveal data-reveal-delay="90">
+            <p class="route-card__tag" data-i18n="route.flex.tag">Flexible</p>
+            <h3 data-i18n="route.flex.title">You do not need every model.</h3>
+            <p data-i18n="route.flex.body">A candidate you have not configured is skipped and the next eligible one is selected. No eligible candidate is recorded plainly and never blocks the install.</p>
+            <dl class="route-states">
+              <div class="route-state route-state--ok">
+                <dt>resolved</dt>
+                <dd data-i18n="route.state.resolved">A confirmed model was selected.</dd>
+              </div>
+              <div class="route-state route-state--warn">
+                <dt>choice_required</dt>
+                <dd data-i18n="route.state.choice">The model you named explicitly is unavailable. Nothing is substituted.</dd>
+              </div>
+              <div class="route-state">
+                <dt>unconfigured</dt>
+                <dd data-i18n="route.state.unconfigured">No eligible candidate. Setup continues.</dd>
+              </div>
+            </dl>
+          </article>
+
+          <article class="glass-card route-card" data-reveal data-reveal-delay="180">
+            <p class="route-card__tag" data-i18n="route.owner.tag">Owners</p>
+            <h3 data-i18n="route.owner.title">Hermes native, or external Maestro.</h3>
+            <p data-i18n="route.owner.body">Hermes-native work stays with Hermes and its own config and auth commands. External owners are coordinated by Maestro, which prepares and reports but never executes.</p>
+            <div class="route-owners">
+              <span class="route-owner route-owner--hermes" data-i18n="route.owner.hermes">hermes native</span>
+              <span class="route-owner" data-i18n="route.owner.maestro">maestro external</span>
+            </div>
+          </article>
+
+          <article class="glass-card route-card" data-reveal data-reveal-delay="270">
+            <p class="route-card__tag" data-i18n="route.family.tag">Families</p>
+            <h3 data-i18n="route.family.title">Qwen, Gemini, Grok, Kimi.</h3>
+            <p data-i18n="route.family.body">Chains name model families, never a single vendor. Declaring the X-platform domain notes the Grok family advisorily, and your explicit choice always wins.</p>
+            <ul class="route-chips route-chips--family" aria-label="Recognized model families">
+              <li>qwen</li>
+              <li>gemini</li>
+              <li>grok</li>
+              <li>kimi</li>
+              <li>claude</li>
+              <li>gpt</li>
+            </ul>
+          </article>
+        </div>
+
+        <p class="ev-note" data-reveal data-i18n="route.note">Shipped order is editorial, not a benchmark. OMH prepares routing metadata and never invokes a model.</p>
+
+        <div class="route-cta" data-reveal>
+          <a class="button button--chrome" href="docs/model-routing/" data-i18n="route.cta">Read the routing setup guide</a>
         </div>
       </section>
 
@@ -693,12 +772,19 @@
 Read the README first, then run the installer that matches this machine
 (curl ... install.sh | sh on macOS/Linux, irm ... install.ps1 | iex on Windows).
 Then run `omh setup`, then `omh doctor`, and paste the doctor output back to me.
+When setup asks about model routing, keep the categories I already have models for,
+leave the rest unconfigured, and tell me which categories ended up empty.
 Don't touch anything else in my Hermes config.</code></pre>
             </div>
 
             <p class="install-step__note" data-i18n="install.step3.note">Paste into Claude Code, Codex, or any agent CLI.</p>
           </li>
         </ol>
+
+        <p class="install-followup" data-reveal>
+          <span data-i18n="install.routing.note">Setup records which models are reachable here. Routing order stays editable afterwards.</span>
+          <a href="docs/model-routing/" data-i18n="install.routing.link">Model routing setup</a>
+        </p>
       </section>
     </main>
 
@@ -716,6 +802,7 @@ Don't touch anything else in my Hermes config.</code></pre>
           <h4 data-i18n="footer.product">Product</h4>
           <a href="#workflows" data-i18n="nav.workflows">Workflows</a>
           <a href="#capabilities" data-i18n="nav.capabilities">Capabilities</a>
+          <a href="docs/model-routing/" data-i18n="nav.routing">Routing</a>
           <a href="#install" data-i18n="nav.install">Install</a>
           <a href="docs/" data-i18n="nav.docs">Docs</a>
         </nav>
@@ -724,6 +811,7 @@ Don't touch anything else in my Hermes config.</code></pre>
           <h4 data-i18n="footer.resources">Resources</h4>
           <a href="https://github.com/rlaope/oh-my-hermes/blob/main/docs/WORKFLOWS.md" data-i18n="footer.workflows">Workflow reference</a>
           <a href="docs/hermes-agent-architecture/" title="See where Hermes ends and OMH begins." data-i18n="footer.architecture">Architecture</a>
+          <a href="docs/model-routing/" title="Editable routing categories and owner boundaries." data-i18n="footer.routing">Model routing</a>
           <a href="https://github.com/rlaope/oh-my-hermes/blob/main/CHANGELOG.md" data-i18n="footer.changelog">Changelog</a>
           <a href="https://github.com/rlaope/oh-my-hermes/releases" data-i18n="footer.releases">Releases</a>
         </nav>
@@ -758,7 +846,7 @@ Don't touch anything else in my Hermes config.</code></pre>
       <symbol id="logo-discord" viewBox="0 0 24 24"><path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/></symbol>
       <symbol id="logo-telegram" viewBox="0 0 24 24"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></symbol>
 
-      <!-- pi executor -->
+      <!-- pi/OMP runtime-family host -->
       <symbol id="mark-pi" viewBox="0 0 32 32">
         <path d="M5.6 9.6h21v3.6h-4.3v10c0 1.4.5 2.1 1.6 2.1.8 0 1.5-.3 2.1-.9l1 3c-1 .9-2.3 1.4-3.9 1.4-3.1 0-4.7-1.7-4.7-5.1V13.2h-4.1v3.3c0 5.7-1.7 9.7-5.2 12.1l-2.6-2.6c2.6-2 3.9-5.1 3.9-9.4v-3.4H5.6V9.6Z"/>
       </symbol>

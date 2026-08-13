@@ -16,9 +16,9 @@ merge readiness, or a merge.
 ## Who Runs What
 
 People normally talk to Hermes and use only two OMH maintenance commands:
-`omh setup` and `omh update`. Coding, research, creation,
-operations, and memory requests should begin as natural-language requests to
-Hermes.
+`omh setup` and `omh update`. `omh doctor` is the normal health-check command.
+Coding, research, creation, operations, memory, and model-setup requests should
+begin as natural-language requests to Hermes.
 
 The rest of the CLI is an agent and operator control plane. `omh coding`, `omh
 runtime`, `omh chat`, `omh memory`, `omh loop`, `omh harness`, and related
@@ -32,6 +32,7 @@ references rather than normal user steps.
 | Goal | Read |
 | --- | --- |
 | Install, update, repair, or remove OMH | [Installation](INSTALLATION.md) |
+| Configure editable Hermes/Maestro model routing | [Installation: Guided Model Setup](INSTALLATION.md#guided-model-setup) |
 | Install on native Windows, and know what is POSIX-only there | [Installation: Windows](INSTALLATION.md#windows) |
 | Understand what OMH is and is not | [Direction](DIRECTION.md) |
 | Understand modules, artifacts, and ownership | [Architecture](ARCHITECTURE.md) |
@@ -76,6 +77,13 @@ Use [Capabilities](CAPABILITIES.md) for the manifest contract and
   `omh setup` and `omh update`; broader CLI examples require an
   explicit agent, wrapper, operator, or maintainer label.
 - Coding-heavy requests stay executor-neutral until a coding owner is selected.
+- Hermes-native aliases/provider bindings stay outside Maestro; Maestro only
+  coordinates prepared external handoffs and never executes work.
+- Model recommendations and X/Grok affinity are editable editorial order, not
+  benchmark or availability claims. Missing heads can use a confirmed compatible
+  Qwen, Gemini, Grok, or other alternative; explicit unavailable choices pause.
+- `pi` and `senpi` are OMO runtime-family hosts. CCAPI and Apitopia are
+  user-declared editorial provider preferences, never probed integrations.
 - Wrapper sessions own chat continuity and plan decisions. Linked runtime runs
   own dispatch, execution, verification, review, CI, and merge evidence.
 - Generated workflow docs come from `src/skills/catalog.py`; update the catalog

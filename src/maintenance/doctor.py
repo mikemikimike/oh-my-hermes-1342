@@ -529,7 +529,11 @@ def run_doctor_advisories(paths: OmhPaths) -> AdvisoryReport:
     appended to the ``list[Check]`` consumed by ``doctor_ok()`` or
     ``recommended_next_action()``, so they cannot change the doctor exit code.
     """
-    return run_config_advisories(paths.hermes_home)
+    return run_config_advisories(
+        paths.hermes_home,
+        omh_home=paths.omh_home,
+        discovery_home=paths.hermes_home.parent,
+    )
 
 
 def doctor_ok(checks: list[Check]) -> bool:

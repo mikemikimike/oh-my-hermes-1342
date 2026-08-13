@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "omh_live_model_tool_answer/v1",
+  "type": "object",
+  "description": "Task-specific benchmark answer. Semantic shape is validated by the controller for the pinned task class.",
+  "minProperties": 1,
+  "additionalProperties": true
+}

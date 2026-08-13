@@ -28,14 +28,16 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import shutil
-from typing import Final, Mapping
+from typing import Callable, Final, Mapping
 
 from ..system.local_store import utc_now
 from ..system.metadata_safety import require_opaque_metadata_ref
 from .executor_auth_signals import executor_auth_signals
+from .model_discovery import discover_local_models
 from .model_routing import (
     CATEGORY_ROLE_SOURCES,
     CATEGORY_SCALE_SOURCES,
+    MODEL_CATEGORIES,
     merged_category_chain,
     model_family,
 )
@@ -89,12 +91,12 @@ MODEL_DOMAIN_AFFINITY_CLAIM_BOUNDARY: Final[str] = (
 # as an opencode plugin — both layouts are first-class hosts (see
 # OMO_RUNTIME_HOST_CANDIDATES in fanout_dispatch). Models named by its config
 # run under the OMO runtime surface, never under codex/claude-code (whose
-# catalogs stay built-in). Capability boundary: model config is currently
-# read ONLY from the opencode config path
-# (`~/.config/opencode/oh-my-openagent.json`). A pi-only install has no
-# verified config layout to probe — inventing a pi-side path would be a
-# guess — so it degrades to an empty inventory and routes report
-# `no_model_catalog` instead of a fabricated catalog.
+# catalogs stay built-in). Catalog compatibility boundary: the legacy
+# route-authoritative model list is still read ONLY from the opencode config
+# path (`~/.config/opencode/oh-my-openagent.json`). The separate
+# reporting-only discovery payload observes canonical `~/.omo/omo.json[c]`
+# and `~/.omo/models.json` metadata, but never promotes those observations
+# into this catalog. Unknown `~/.omp` layouts remain explicitly unverified.
 MODEL_INVENTORY_CATALOG_PROFILE: Final[str] = "omo-runtime"
 
 LOCAL_MODEL_CATALOG_SCHEMA_VERSION: Final[str] = "local_model_catalog/v1"
@@ -117,7 +119,12 @@ _SENPI_AUTH_RELATIVE: Final[str] = ".senpi/agent/auth.json"
 _READ_ERRORS = (OSError, UnicodeDecodeError, json.JSONDecodeError)
 
 
-def local_model_inventory(home: Path | None = None) -> dict[str, object]:
+def local_model_inventory(
+    home: Path | None = None,
+    *,
+    discovery_limits: Mapping[str, object] | None = None,
+    discovery_clock: Callable[[], float] | None = None,
+) -> dict[str, object]:
     """Return the metadata-only inventory of locally-activated coding models."""
     base = home if home is not None else Path.home()
     cli_presence = {command: shutil.which(command) is not None for command in CLI_PRESENCE_COMMANDS}
@@ -135,6 +142,11 @@ def local_model_inventory(home: Path | None = None) -> dict[str, object]:
     }
     available_models = _aggregated_models(omo_models)
     families = sorted({str(entry["family"]) for entry in available_models if entry["family"]})
+    discovery = (
+        discover_local_models(base, limits=discovery_limits, clock=discovery_clock)
+        if discovery_clock is not None
+        else discover_local_models(base, limits=discovery_limits)
+    )
     return {
         "schema_version": MODEL_INVENTORY_SCHEMA_VERSION,
         "observed_at": utc_now(),
@@ -162,6 +174,7 @@ def local_model_inventory(home: Path | None = None) -> dict[str, object]:
             for domain, affine in sorted(MODEL_DOMAIN_AFFINITIES.items())
         ],
         "domain_affinity_claim_boundary": MODEL_DOMAIN_AFFINITY_CLAIM_BOUNDARY,
+        "model_discovery": discovery,
         "claim_boundary": MODEL_INVENTORY_CLAIM_BOUNDARY,
     }
 
@@ -303,9 +316,14 @@ def inventory_model_catalog(inventory: Mapping[str, object]) -> dict[str, object
         )
     category_chains = inventory.get("omo_category_chains", {})
     chains: dict[str, tuple[dict[str, str], ...]] = {}
+    category_catalog: dict[str, tuple[dict[str, str], ...]] = {}
     if isinstance(category_chains, Mapping):
-        for role, categories in OMO_CATEGORY_ROLE_SOURCES.items():
-            merged = merged_category_chain(category_chains, categories)
+        for category in MODEL_CATEGORIES:
+            merged = merged_category_chain(category_chains, (category,))
+            if merged:
+                category_catalog[category] = tuple(merged)
+        for role, source_categories in OMO_CATEGORY_ROLE_SOURCES.items():
+            merged = merged_category_chain(category_chains, source_categories)
             if merged:
                 chains[role] = tuple(merged)
         # `{role}:{scale}` chains, keyed exactly like the `research:{depth}`
@@ -317,8 +335,8 @@ def inventory_model_catalog(inventory: Mapping[str, object]) -> dict[str, object
             # chain nothing can ever look up.
             if ":" in role or role == "research":
                 continue
-            for scale, categories in OMO_CATEGORY_SCALE_SOURCES.items():
-                merged = merged_category_chain(category_chains, categories)
+            for scale, source_categories in OMO_CATEGORY_SCALE_SOURCES.items():
+                merged = merged_category_chain(category_chains, source_categories)
                 if merged:
                     chains[f"{role}:{scale}"] = tuple(merged)
     sources = inventory.get("sources", {})
@@ -338,6 +356,10 @@ def inventory_model_catalog(inventory: Mapping[str, object]) -> dict[str, object
                 role: [[entry["model_id"], entry["reasoning_effort"]] for entry in chain]
                 for role, chain in sorted(chains.items())
             },
+            "categories": {
+                category: [[entry["model_id"], entry["reasoning_effort"]] for entry in chain]
+                for category, chain in sorted(category_catalog.items())
+            },
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -349,6 +371,7 @@ def inventory_model_catalog(inventory: Mapping[str, object]) -> dict[str, object
         "catalog_kind": "local_inventory",
         "options": options,
         "chains": chains,
+        "categories": category_catalog,
         # The affinity vocabulary rides the catalog payload so the resolver
         # consumes it as data — routing never imports this module, and the
         # reorder scope stays exactly the locally-derived chains.

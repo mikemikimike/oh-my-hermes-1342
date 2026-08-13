@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "omh_live_model_tool_run/v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "created_at",
+    "instance_id",
+    "split",
+    "condition",
+    "harness",
+    "model",
+    "task_digest",
+    "route",
+    "observation",
+    "grade",
+    "final_tree_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "omh_live_model_tool_run/v1"},
+    "created_at": {"type": "string"},
+    "instance_id": {"type": "string"},
+    "split": {"enum": ["development", "evaluation"]},
+    "condition": {"enum": ["baseline", "optimized"]},
+    "harness": {"enum": ["fake", "omh"]},
+    "model": {"type": ["object", "null"]},
+    "task_digest": {"$ref": "#/$defs/digest"},
+    "route": {
+      "type": "object",
+      "properties": {
+        "selected_model": {"type": "string"},
+        "selected_reasoning_effort": {"type": "string"},
+        "model_family": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "observation": {
+      "type": "object",
+      "required": ["status", "tools", "tokens", "cost_usd"],
+      "properties": {
+        "status": {"type": "string"},
+        "tools": {"type": ["integer", "null"], "minimum": 0},
+        "tokens": {"type": ["integer", "null"], "minimum": 0},
+        "cost_usd": {"type": ["number", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "grade": {"type": "object"},
+    "final_tree_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

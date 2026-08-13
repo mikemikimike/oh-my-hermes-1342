@@ -160,6 +160,25 @@ Maintenance paths such as reconciling a `--full` install back to core live in
 
 <br>
 
+## Recommended models
+
+OMH ships with these editable category recommendations:
+
+| Category | Recommended models |
+| --- | --- |
+| `ultrabrain` | GPT-5.6 Sol |
+| `deep` | GPT-5.6 Terra |
+| `unspecified-high` | Kimi K3, then Claude Opus 5 |
+| `unspecified-low` | GLM 5.2, then GLM 5.2 Ultrafast |
+| `visual-engineering` | Claude Fable 5, then Kimi K3 |
+
+Ask Hermes to **set up my models** to review or change them. These are editable
+preferences, not benchmark results. See
+[Guided Model Setup](docs/INSTALLATION.md#guided-model-setup) for the detailed
+setup, fallback, provider, and ownership rules.
+
+<br>
+
 ## Ultra-Skills
 
 <p align="center">

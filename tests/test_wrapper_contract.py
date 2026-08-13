@@ -14,6 +14,13 @@ load_local_package()
 from omh.context_safety import CONTEXT_ARTIFACT_REF_SCHEMA_VERSION
 from omh.ingress import CHAT_SOURCES
 from omh.paths import OmhPaths, resolve_paths
+from omh.routing.owner_preference import (
+    empty_owner_preference_state,
+    owner_preference_path,
+    read_owner_preference,
+    record_accepted_explicit_choice,
+    write_owner_preference,
+)
 from omh.profiles.setup import write_setup_profile
 from omh.runtime.records import build_wrapper_session_record
 from omh.workflows.domain_routing_context import DomainRoutingResolution
@@ -968,18 +975,80 @@ class WrapperContractTests(unittest.TestCase):
         self.assertIn("executor_handoff", payload["delegation"])
         self.assertEqual(payload["chat_response"]["state"]["executor_target"], "codex")
 
-    def test_delegate_mode_preserves_explicit_executor_override_over_setup_default(self) -> None:
+    def test_delegate_mode_resolves_production_hermes_model_binding(self) -> None:
         with TemporaryDirectory() as tmp:
-            paths = resolve_paths(Path(tmp) / ".omh", Path(tmp) / ".hermes")
-            write_setup_profile(paths, default_executor="codex")
+            root = Path(tmp)
+            paths = resolve_paths(root / ".omh", root / ".hermes")
+            omo_config = root / ".omo" / "omo.json"
+            omo_config.parent.mkdir(parents=True)
+            omo_config.write_text(
+                json.dumps(
+                    {
+                        "models": [
+                            {
+                                "provider": "apitopia",
+                                "model_id": "kimi-k3",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             payload = build_chat_interaction_payload(
                 "implement a focused parser fix in src/omh/parser.py and update tests",
                 source="discord",
                 mode="delegate",
-                executor_target="claude-code",
+                executor_target="hermes",
                 paths=paths,
             )
+
+        binding = payload["delegation"]["runtime_handoff"]["hermes_native_model_binding"]
+        self.assertEqual(binding["status"], "prepared_not_observed")
+        self.assertEqual(binding["alias"], "unspecified-high")
+        self.assertEqual(binding["binding"], "apitopia/kimi-k3")
+        self.assertEqual(
+            binding["kanban_task_override"]["command"],
+            "set-model apitopia/kimi-k3",
+        )
+        self.assertEqual(binding["delegate_task_override"]["model"], "apitopia/kimi-k3")
+        self.assertNotIn("maestro", json.dumps(binding).casefold())
+
+    def test_delegate_mode_keeps_unconfigured_hermes_binding_unpinned(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = resolve_paths(root / ".omh", root / ".hermes")
+
+            payload = build_chat_interaction_payload(
+                "implement a focused parser fix in src/omh/parser.py and update tests",
+                source="discord",
+                mode="delegate",
+                executor_target="hermes",
+                paths=paths,
+            )
+
+        binding = payload["delegation"]["runtime_handoff"]["hermes_native_model_binding"]
+        self.assertEqual(binding["status"], "choice_required")
+        self.assertEqual(binding["next_action"], "configure_hermes_native_alias")
+        self.assertNotIn("kanban_task_override", binding)
+        self.assertNotIn("delegate_task_override", binding)
+
+    def test_delegate_mode_preserves_explicit_executor_override_over_setup_default(self) -> None:
+        with TemporaryDirectory() as tmp:
+            paths = resolve_paths(Path(tmp) / ".omh", Path(tmp) / ".hermes")
+            write_setup_profile(paths, default_executor="codex")
+
+            with mock.patch(
+                "omh.wrapper.contract.discover_local_models",
+                side_effect=AssertionError("external handoffs must not run Hermes discovery"),
+            ):
+                payload = build_chat_interaction_payload(
+                    "implement a focused parser fix in src/omh/parser.py and update tests",
+                    source="discord",
+                    mode="delegate",
+                    executor_target="claude-code",
+                    paths=paths,
+                )
 
         self.assertEqual(payload["next_action"], "show_prompt_handoff")
         self.assertEqual(payload["executor_resolution"]["source"], "explicit")
@@ -1051,6 +1120,37 @@ class WrapperContractTests(unittest.TestCase):
         self.assertIn("prepared only", payload["chat_response"]["claim_boundary"])
         self.assertIn("has not started", payload["chat_response"]["claim_boundary"])
 
+    def test_route_coding_workflow_resolves_production_hermes_model_binding(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = resolve_paths(root / ".omh", root / ".hermes")
+            omo_config = root / ".omo" / "omo.json"
+            omo_config.parent.mkdir(parents=True)
+            omo_config.write_text(
+                json.dumps(
+                    {
+                        "models": [
+                            {
+                                "provider": "apitopia",
+                                "model_id": "kimi-k3",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = build_chat_interaction_payload(
+                "research the repo, plan, implement, code-review, sync docs, and prepare a PR",
+                source="discord",
+                executor_target="hermes",
+                paths=paths,
+            )
+
+        binding = payload["delegation"]["runtime_handoff"]["hermes_native_model_binding"]
+        self.assertEqual(binding["binding"], "apitopia/kimi-k3")
+        self.assertEqual(binding["status"], "prepared_not_observed")
+
     def test_route_coding_workflow_requires_executor_choice_without_default(self) -> None:
         payload = build_chat_interaction_payload(
             "research the repo, plan, implement, code-review, sync docs, and prepare a PR",
@@ -1065,6 +1165,134 @@ class WrapperContractTests(unittest.TestCase):
         self.assertTrue(payload["chat_response"]["state"]["executor_choice_required"])
         self.assertIn("choose_executor", actions)
         self.assertIn("not dispatch", payload["chat_response"]["claim_boundary"])
+
+    def test_route_coding_workflow_uses_visible_reversible_learned_owner_default(self) -> None:
+        with TemporaryDirectory() as tmp:
+            paths = resolve_paths(Path(tmp) / ".omh", Path(tmp) / ".hermes")
+            state = empty_owner_preference_state()
+            for index in range(3):
+                state = record_accepted_explicit_choice(
+                    state,
+                    route_family="ulw-coding-delivery",
+                    selected_owner="codex",
+                    occurred_at=f"2026-08-13T00:00:0{index + 1}Z",
+                )
+            write_owner_preference(paths, state)
+
+            payload = build_chat_interaction_payload(
+                "research the repo, plan, implement, code-review, sync docs, and prepare a PR",
+                source="discord",
+                paths=paths,
+            )
+
+        decision = payload["coding_route_decision"]
+        actions = {action["id"]: action for action in payload["chat_response"]["actions"]}
+        self.assertEqual(payload["executor_resolution"]["source"], "learned_owner_preference")
+        self.assertEqual(payload["delegation"]["selected_executor_profile"], "codex")
+        self.assertEqual(decision["owner_preference_action"], "use_learned_default")
+        self.assertEqual(decision["owner_preference_route_family"], "ulw-coding-delivery")
+        self.assertEqual(decision["owner_preference_evidence_count"], 3)
+        self.assertTrue(decision["owner_preference_override_available"])
+        self.assertTrue(decision["owner_preference_reset_available"])
+        self.assertIn("choose_executor", actions)
+        self.assertEqual(actions["choose_executor"]["label"], "Override learned coding agent")
+        self.assertIn("reset_coding_owner_preference", actions)
+        self.assertEqual(
+            payload["chat_response"]["state"]["handoff_status"],
+            "prepared_not_observed",
+        )
+        self.assertEqual(
+            decision["claim_boundary"],
+            payload["delegation"]["coding_route_decision"]["claim_boundary"],
+        )
+        self.assertEqual(
+            payload["chat_response"]["state"]["handoff_status"],
+            "prepared_not_observed",
+        )
+
+    def test_explicit_owner_acceptance_learns_only_after_three_safe_choices(self) -> None:
+        message = "research the repo, plan, implement, code-review, sync docs, and prepare a PR"
+        with TemporaryDirectory() as tmp:
+            paths = resolve_paths(Path(tmp) / ".omh", Path(tmp) / ".hermes")
+
+            initial = build_chat_interaction_payload(message, source="discord", paths=paths)
+            self.assertEqual(initial["next_action"], "choose_executor")
+            self.assertFalse(owner_preference_path(paths).exists())
+
+            for expected_count in range(1, 4):
+                accepted = build_chat_interaction_payload(
+                    message,
+                    source="discord",
+                    paths=paths,
+                    executor_target="codex",
+                )
+                state = read_owner_preference(paths)
+                self.assertEqual(accepted["executor_resolution"]["source"], "explicit")
+                self.assertEqual(
+                    state["routes"]["ulw-coding-delivery"][
+                        "consecutive_accepted_explicit_choices"
+                    ],
+                    expected_count,
+                )
+
+            learned = build_chat_interaction_payload(message, source="discord", paths=paths)
+            self.assertEqual(learned["executor_resolution"]["source"], "learned_owner_preference")
+            self.assertEqual(learned["delegation"]["selected_executor_profile"], "codex")
+            self.assertEqual(
+                learned["coding_route_decision"]["owner_preference_action"],
+                "use_learned_default",
+            )
+
+    def test_authority_gate_prevents_explicit_owner_acceptance_learning(self) -> None:
+        with TemporaryDirectory() as tmp:
+            paths = resolve_paths(Path(tmp) / ".omh", Path(tmp) / ".hermes")
+
+            payload = build_chat_interaction_payload(
+                "research the repo, plan, implement, code-review, sync docs, deploy to production, and prepare a PR",
+                source="discord",
+                paths=paths,
+                executor_target="codex",
+            )
+
+            self.assertEqual(payload["coding_route_decision"]["source"], "user_choice_required")
+            self.assertFalse(owner_preference_path(paths).exists())
+
+    def test_changed_explicit_owner_reset_is_visible_on_choice_card(self) -> None:
+        with TemporaryDirectory() as tmp:
+            paths = resolve_paths(Path(tmp) / ".omh", Path(tmp) / ".hermes")
+            state = empty_owner_preference_state()
+            for index in range(3):
+                state = record_accepted_explicit_choice(
+                    state,
+                    route_family="ulw-coding-delivery",
+                    selected_owner="codex",
+                    occurred_at=f"2026-08-13T00:00:0{index + 1}Z",
+                )
+            state = record_accepted_explicit_choice(
+                state,
+                route_family="ulw-coding-delivery",
+                selected_owner="claude-code",
+                occurred_at="2026-08-13T00:00:04Z",
+            )
+            write_owner_preference(paths, state)
+
+            payload = build_chat_interaction_payload(
+                "research the repo, plan, implement, code-review, sync docs, and prepare a PR",
+                source="discord",
+                paths=paths,
+            )
+
+        decision = payload["coding_route_decision"]
+        response = payload["chat_response"]
+        self.assertEqual(payload["next_action"], "choose_executor")
+        self.assertEqual(decision["owner_preference_action"], "ask_explicit_owner")
+        self.assertEqual(decision["owner_preference_evidence_count"], 1)
+        self.assertEqual(decision["owner_preference_reset_reason"], "explicit_owner_changed")
+        self.assertIn("explicit_owner_changed", response["body"])
+        self.assertEqual(
+            response["state"]["owner_preference_reset_reason"],
+            "explicit_owner_changed",
+        )
 
     def test_executor_choice_card_offers_neutral_split_across_agents(self) -> None:
         payload = build_chat_interaction_payload(

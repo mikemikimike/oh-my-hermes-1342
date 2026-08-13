@@ -47,7 +47,6 @@
 
 <p align="center">
   <strong>只需安装一次。保留 Hermes，再加上一层更强的工作系统。</strong>
-  <br>
   <em>以清晰的证据边界提供规划、研究、内容制作、编码 handoff、运维和项目记忆。</em>
 </p>
 
@@ -82,7 +81,6 @@
 > <p align="center">
 >   <img src="assets/friren-agent-omh-callout.png" alt="Friren Agent explaining OMH in Art&Engine" width="720">
 > </p>
-
 ## 快速开始
 
 **安装本地命令和受管理的 skill：**
@@ -99,8 +97,6 @@ irm https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.ps1 | iex
 omh setup
 ```
 
-<br>
-
 **Hermes skill tap：**
 
 ```sh
@@ -114,8 +110,6 @@ hermes skills install rlaope/oh-my-hermes/skills/omh-routing --yes
 Hey Agent, Install this >> https://github.com/rlaope/oh-my-hermes <<
 ```
 
-<br>
-
 **更新与健康检查：**
 
 ```sh
@@ -126,7 +120,21 @@ omh doctor
 把 `--full` 安装收敛回 core 这类维护路径，见
 [Installation](docs/INSTALLATION.md#reconciling-an-existing-full-install-back-to-core)。
 
-<br>
+## 推荐模型
+
+OMH 随附以下可编辑的类别推荐模型：
+
+| 类别 | 推荐模型 |
+| --- | --- |
+| `ultrabrain` | GPT-5.6 Sol |
+| `deep` | GPT-5.6 Terra |
+| `unspecified-high` | Kimi K3，其次 Claude Opus 5 |
+| `unspecified-low` | GLM 5.2，其次 GLM 5.2 Ultrafast |
+| `visual-engineering` | Claude Fable 5，其次 Kimi K3 |
+
+请让 Hermes **设置我的模型**，以查看或更改这些推荐。它们是可编辑的偏好，
+不是 benchmark 结果。详细的设置、fallback、provider 与所有权规则见
+[Guided Model Setup](docs/INSTALLATION.md#guided-model-setup)。
 
 ## Ultra 技能
 
@@ -151,9 +159,6 @@ omh doctor
 | ⚡ `ulw-process` | 把一个任务从调研一路带到 PR。 |
 | ⚡ `ulw-qa` | 故意用狠场景攻击，坏哪修哪。 |
 | ⚡ `ulw-perf` | 先测出真正慢和贵的地方，再逐条修热路径。 |
-
-<br>
-
 ## OMH 提供什么
 
 OMH 将 **105 个**可安装的 workflow skill 组织为6个容易理解的能力族。
@@ -185,7 +190,6 @@ OMH 将 **105 个**可安装的 workflow skill 组织为6个容易理解的能�
 | 🎨 **打造精致的交付物** | `omh-design-quality-gate` · `omh-materials-package` · `omh-deliverable-package` · `omh-image-cards` | 围绕内容、审美、无障碍性和渲染质量 gate，制作网站、视觉素材、报告、演示文稿、文档、PDF、海报和交付包。 |
 | 🧠 **记忆与运维** | `omh-memory-new` · `omh-memory-sync` · `omh-ops-observability-card` · `omh-doctor` | 让项目记忆保持“先审查后使用”，呈现运维就绪状态，并在不臆造 provider 或系统状态的前提下给出下一步修复动作。 |
 | 🔌 **在不隐藏边界的前提下连接** | `omh-toolbelt-readiness` · `omh-external-connector-readiness` · `omh-agent-board` | 在工作依赖某个工具、connector 或 agent 面之前先确认它是否真的可用，同时让 host 加载、工具使用和外部 provider 访问都能被分别观测。 |
-
 ## 面向真实工作的设计
 
 <p align="center">
@@ -227,7 +231,6 @@ connector 系统都位于明确的外部 provider contract 之后。OMH 可以�
 **🧱 local-first 的控制面。** OMH 的核心路由、catalog、manifest 和声明规则
 都是确定性的本地表面。外部调用与 provider 访问始终是显式集成，而不是核心
 内部隐藏的行为。
-
 ## 证据先于声明
 
 OMH 只报告自己观测到的事情。你看到的每个状态都由两部分组成：处于哪个阶段，
@@ -242,7 +245,6 @@ OMH 只报告自己观测到的事情。你看到的每个状态都由两部分�
 
 关键是倒数第二行：executor 说自己完成了，与结果被检查过是两回事，
 而大多数工具把两者都写成「完成」。
-
 ## 文档
 
 - [文档地图](docs/README.md)
@@ -254,7 +256,6 @@ OMH 只报告自己观测到的事情。你看到的每个状态都由两部分�
 - [角色](docs/ROLES.md)
 - [应用案例](docs/APPLICATION_CASES.md)
 - [发布与开发](docs/RELEASE.md)
-
 ## 开发
 
 ```sh

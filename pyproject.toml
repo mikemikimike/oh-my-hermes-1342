@@ -40,6 +40,7 @@ packages = [
   "omh.cli",
   "omh.codegraph",
   "omh.coding",
+  "omh.coding.maestro",
   "omh.commands",
   "omh.conformance",
   "omh.core",
@@ -69,6 +70,7 @@ packages = [
 "omh.catalogs" = "src/catalogs"
 "omh.codegraph" = "src/codegraph"
 "omh.coding" = "src/coding"
+"omh.coding.maestro" = "src/coding/maestro"
 "omh.commands" = "src/commands"
 "omh.conformance" = "src/conformance"
 "omh.core" = "src/core"

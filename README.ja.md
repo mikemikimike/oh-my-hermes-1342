@@ -47,7 +47,6 @@
 
 <p align="center">
   <strong>一度インストールするだけ。Hermes はそのまま、より強い運用レイヤーを追加します。</strong>
-  <br>
   <em>計画、調査、制作、コーディング handoff、運用、プロジェクト記憶を明確な証拠境界とともに提供します。</em>
 </p>
 
@@ -84,7 +83,6 @@
 > <p align="center">
 >   <img src="assets/friren-agent-omh-callout.png" alt="Friren Agent explaining OMH in Art&Engine" width="720">
 > </p>
-
 ## クイックスタート
 
 **ローカルコマンドと管理対象 skill をインストールします:**
@@ -101,8 +99,6 @@ irm https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.ps1 | iex
 omh setup
 ```
 
-<br>
-
 **Hermes skill tap:**
 
 ```sh
@@ -116,8 +112,6 @@ hermes skills install rlaope/oh-my-hermes/skills/omh-routing --yes
 Hey Agent, Install this >> https://github.com/rlaope/oh-my-hermes <<
 ```
 
-<br>
-
 **アップデートと状態チェック:**
 
 ```sh
@@ -129,7 +123,22 @@ omh doctor
 [Installation](docs/INSTALLATION.md#reconciling-an-existing-full-install-back-to-core)
 にあります。
 
-<br>
+## 推奨モデル
+
+OMH には次の編集可能なカテゴリ別推奨モデルが含まれています。
+
+| カテゴリ | 推奨モデル |
+| --- | --- |
+| `ultrabrain` | GPT-5.6 Sol |
+| `deep` | GPT-5.6 Terra |
+| `unspecified-high` | Kimi K3、次に Claude Opus 5 |
+| `unspecified-low` | GLM 5.2、次に GLM 5.2 Ultrafast |
+| `visual-engineering` | Claude Fable 5、次に Kimi K3 |
+
+Hermes に **モデルをセットアップして** と頼むと、確認や変更ができます。
+これは編集可能な優先設定であり、benchmark 結果ではありません。詳しい設定、
+fallback、provider、所有権のルールは
+[Guided Model Setup](docs/INSTALLATION.md#guided-model-setup) を参照してください。
 
 ## ウルトラスキル
 
@@ -154,9 +163,6 @@ omh doctor
 | ⚡ `ulw-process` | 一つのタスクをリサーチから PR まで最後まで運びます。 |
 | ⚡ `ulw-qa` | わざと過酷なシナリオで攻撃し、壊れた所を直します。 |
 | ⚡ `ulw-perf` | 本当に遅く高コストな場所を測り、ホットパスを一つずつ修正します。 |
-
-<br>
-
 ## OMH が追加するもの
 
 OMH は **105 個**のインストール可能な workflow skill を、理解しやすい6つの
@@ -189,7 +195,6 @@ OMH は **105 個**のインストール可能な workflow skill を、理解し
 | 🎨 **洗練された成果物の制作** | `omh-design-quality-gate` · `omh-materials-package` · `omh-deliverable-package` · `omh-image-cards` | コンテンツ・完成度・アクセシビリティ・レンダリング品質ゲートを軸に、Web サイト、ビジュアル、レポート、スライド、ドキュメント、PDF、ポスター、パッケージを制作します。 |
 | 🧠 **記憶と運用** | `omh-memory-new` · `omh-memory-sync` · `omh-ops-observability-card` · `omh-doctor` | プロジェクト記憶をレビュー優先で保ち、運用の準備状況を可視化し、provider やシステム状態を作り話にせず次の修復アクションを示します。 |
 | 🔌 **境界を隠さない接続** | `omh-toolbelt-readiness` · `omh-external-connector-readiness` · `omh-agent-board` | 作業がそれに依存する前に、必要なツール・connector・agent 面が実際に使えるかを確認し、host のロード・ツール利用・外部 provider アクセスを個別に観測可能な状態に保ちます。 |
-
 ## 実務向けの設計
 
 <p align="center">
@@ -239,7 +244,6 @@ executor が実装を担い、OMH はその作業を取り巻くローカル con
 catalog、manifest、主張ルールは決定的なローカル表面です。外部呼び出しや
 provider アクセスは、コア内部に隠された挙動ではなく、明示的な統合であり続
 けます。
-
 ## 主張より証拠
 
 OMH は自分が見たことだけを起きたと報告します。表示される状態は常に「どの段階か」と「OMH がどれだけ確信しているか」の二部構成です。
@@ -252,7 +256,6 @@ OMH は自分が見たことだけを起きたと報告します。表示され�
 | `Test · verified` | test、review、CI gate が実際に通過しました。 |
 
 重要なのは下から二番目の行です。executor が終わったと言うことと結果が確認されたことは別ですが、多くのツールは両方を「完了」と書きます。
-
 ## ドキュメント
 
 - [ドキュメントマップ](docs/README.md)
@@ -264,7 +267,6 @@ OMH は自分が見たことだけを起きたと報告します。表示され�
 - [ロール](docs/ROLES.md)
 - [活用事例](docs/APPLICATION_CASES.md)
 - [リリースと開発](docs/RELEASE.md)
-
 ## 開発
 
 ```sh

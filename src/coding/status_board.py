@@ -43,6 +43,11 @@ from ..paths import OmhPaths
 from .context_safety import sanitize_user_facing_progress_text
 from .executor_progress import project_active_executor_status
 from .inflight import read_inflight_markers
+from .routing_observation import (
+    authenticate_executor_observation,
+    build_routing_observation,
+    render_routing_status_rows,
+)
 from .work_reporting import _korean_locale
 
 CODING_STATUS_BOARD_SCHEMA_VERSION: Final[str] = "omh_coding_status_board/v1"
@@ -162,6 +167,9 @@ def render_status_board_text(payload: dict[str, Any], *, locale: str = "") -> st
     for unit in units:
         cells = [_cell(unit, field) for _, field in _COLUMNS]
         lines.append(_table_row(cells, widths, summary=str(unit.get("summary", "") or "")))
+        observation = unit.get("routing_observation")
+        if isinstance(observation, Mapping):
+            lines.extend(render_routing_status_rows(observation))
     truncation = _truncation_line(payload, korean=korean)
     if truncation:
         lines.append(truncation)
@@ -347,18 +355,34 @@ def _dispatch_summary_units(paths: OmhPaths) -> list[dict[str, Any]]:
         if error or not isinstance(summary, dict):
             continue
         fanout_id = str(summary.get("fanout_id", "") or fanout_dir.name)
-        titles = _unit_titles(fanout_dir)
+        contract_units = _contract_units(fanout_dir)
         for entry in summary.get("units", []):
             if not isinstance(entry, dict):
                 continue
             unit_id = str(entry.get("unit_id", "") or "")
             if not unit_id:
                 continue
+            contract_unit = contract_units.get(unit_id, {})
+            handoff = contract_unit.get("handoff") if isinstance(contract_unit.get("handoff"), Mapping) else {}
+            route = handoff.get("model_route") if isinstance(handoff.get("model_route"), Mapping) else {}
+            observation = build_routing_observation(
+                route=route,
+                session_observation=authenticate_executor_observation({
+                    "status": entry.get("status"),
+                    "owner": entry.get("owner"),
+                    "model": entry.get("model"),
+                    "reasoning_effort": entry.get("reasoning_effort"),
+                    "elapsed_seconds": _finished_seconds(entry.get("duration_seconds")),
+                    "tokens": _reported_tokens(entry),
+                    "session_id": entry.get("session_ref"),
+                    "run_id": entry.get("run_ref"),
+                }),
+            )
             units.append(
                 _unit_row(
                     fanout_id=fanout_id,
                     unit_id=unit_id,
-                    label=titles.get(unit_id, unit_id),
+                    label=str(contract_unit.get("title", "") or unit_id),
                     run_ref=str(entry.get("run_ref", "") or ""),
                     runtime=str(entry.get("owner", "") or ""),
                     runtime_host="",
@@ -370,6 +394,7 @@ def _dispatch_summary_units(paths: OmhPaths) -> list[dict[str, Any]]:
                     tokens_total=_reported_tokens(entry),
                     session_ref=str(entry.get("session_ref", "") or ""),
                     summary=str(entry.get("reason", "") or ""),
+                    routing_observation=observation,
                 )
             )
     return units
@@ -386,6 +411,15 @@ def _progress_units(paths: OmhPaths, observed_at: str) -> list[dict[str, Any]]:
             continue
         event = row.get("latest_event", {})
         event = event if isinstance(event, dict) else {}
+        observation = build_routing_observation(
+            session_observation=authenticate_executor_observation({
+                **row,
+                **event,
+                "status": event.get("status") or row.get("state"),
+                "owner": row.get("executor_profile"),
+                "run_id": row.get("target_id"),
+            }),
+        )
         units.append(
             _unit_row(
                 fanout_id="",
@@ -404,6 +438,7 @@ def _progress_units(paths: OmhPaths, observed_at: str) -> list[dict[str, Any]]:
                 tokens_total=UNKNOWN,
                 session_ref="",
                 summary=str(event.get("summary", "") or ""),
+                routing_observation=observation,
             )
         )
     return units
@@ -425,6 +460,7 @@ def _unit_row(
     session_ref: str,
     summary: str,
     unmapped_source_status: str = "",
+    routing_observation: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     row = {
         "fanout_id": fanout_id,
@@ -448,22 +484,32 @@ def _unit_row(
     # status was accepted verbatim -- never that nothing was checked.
     if unmapped_source_status:
         row["unmapped_source_status"] = unmapped_source_status
+    if routing_observation is not None:
+        row["routing_observation"] = dict(routing_observation)
+        row["routing_status_rows"] = list(render_routing_status_rows(routing_observation))
     return row
 
 
-def _unit_titles(fanout_dir: Path) -> dict[str, str]:
+def _contract_units(fanout_dir: Path) -> dict[str, dict[str, Any]]:
     contract, error = read_json_object_result(fanout_dir / "fanout_contract.json")
     if error or not isinstance(contract, dict):
         return {}
-    titles: dict[str, str] = {}
+    units: dict[str, dict[str, Any]] = {}
     for unit in contract.get("units", []):
         if not isinstance(unit, dict):
             continue
         unit_id = str(unit.get("unit_id", "") or "")
-        title = str(unit.get("title", "") or "")
-        if unit_id and title:
-            titles[unit_id] = title
-    return titles
+        if unit_id:
+            units[unit_id] = unit
+    return units
+
+
+def _unit_titles(fanout_dir: Path) -> dict[str, str]:
+    """Compatibility helper retained for plugin-parity tests."""
+    return {
+        unit_id: str(unit.get("title", "") or unit_id)
+        for unit_id, unit in _contract_units(fanout_dir).items()
+    }
 
 
 def _finished_seconds(value: Any) -> Any:

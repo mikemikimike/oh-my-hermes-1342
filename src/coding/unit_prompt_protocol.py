@@ -93,10 +93,23 @@ HIGH_EFFORT_CALIBRATIONS: Final[dict[str, str]] = {
         "and act."
     ),
     "glm": (
-        "High-effort calibration: follow the numbered criteria literally — 'every' means every, and "
-        "the checklist never grows mid-run. Sufficient context beats complete context: once you can "
-        "act correctly, act. Keep the change goal-shaped — smallest correct diff, no speculative "
-        "fallbacks, no unrequested refactors — and let the single verification pass prove it."
+        "High-effort calibration: use interleaved reasoning only where it improves a tool decision: "
+        "interpret each result, choose the next bounded action, and preserve prior reasoning context "
+        "when the runtime exposes it. Mechanical steps need no extended plan. Keep the change "
+        "goal-shaped, and let the single verification pass prove it."
+    ),
+    "qwen": (
+        "High-effort calibration: current Qwen3-Coder is a non-thinking coding-agent model, so do not "
+        "ask it to emit reasoning or thinking tags. Give the exact goal, repository state, allowed "
+        "boundaries, tool schemas, and completion criteria, then follow one explicit plan. Recover "
+        "from failures using observed tool output and stop after one passing verification run."
+    ),
+    "deepseek": (
+        "High-effort calibration: treat the model version and declared thinking mode as contract "
+        "fields; never apply legacy R1 prompting to every DeepSeek model. Preserve runtime-provided "
+        "reasoning context across tool results only on a reasoning-capable route; otherwise use the "
+        "same explicit goal, boundaries, and completion criteria without thinking tags. Make the "
+        "smallest correct change, verify once, and stop."
     ),
     "generic": (
         "High-effort calibration: reserve extended reasoning for genuine ambiguity with materially "
@@ -109,7 +122,7 @@ HIGH_EFFORT_CALIBRATIONS: Final[dict[str, str]] = {
 # Calibration for the MAIN agent — the one COMPOSING the split, the unit
 # prompts, and the briefings — keyed by ITS OWN model family. The user picks
 # what Hermes runs on (a claude-family fable/opus, a gpt-family sol/terra, a
-# gemini, a kimi, ...), and each family fails composition differently: the
+# gemini, a kimi, a qwen, ...), and each family fails composition differently: the
 # guidance counters the composer's own defaults, never the subagents'.
 # Same key set as HIGH_EFFORT_CALIBRATIONS (parity-tested) so no family gets
 # subagent discipline without composer discipline, and "generic" stays the
@@ -139,16 +152,27 @@ MAIN_AGENT_COMPOSITION_CALIBRATIONS: Final[dict[str, str]] = {
         "boundaries, take the first and move."
     ),
     "glm": (
-        "Composition calibration: fill the contract fields literally — every unit carries its "
-        "owner, boundary, and (when known) model, role, and domain; 'every' means every. Sufficient "
-        "context beats complete context: once boundaries are clean and dependencies acyclic, freeze "
-        "the smallest split that covers the goal."
+        "Composition calibration: use interleaved reasoning only to interpret evidence between "
+        "contract-building tools; mechanical field assembly needs no extra planning. Every unit "
+        "carries its owner, boundary, and known route fields. Once boundaries are clean and "
+        "dependencies acyclic, freeze the smallest split that covers the goal."
     ),
     "grok": (
         "Composition calibration: speed never skips freeze-time validation — run the overlap and "
         "cycle checks before recording the contract, not after dispatch fails. Pick the partition "
         "once by the stated boundaries and dispatch; re-querying for a better split is re-verifying "
         "a settled decision."
+    ),
+    "qwen": (
+        "Composition calibration: current Qwen3-Coder is non-thinking; freeze one ordered split with "
+        "exact owners, boundaries, tool contracts, dependencies, roles, and verification commands "
+        "instead of requesting reasoning tags. Validate once and move to dispatch."
+    ),
+    "deepseek": (
+        "Composition calibration: keep the DeepSeek model version and thinking mode explicit in the "
+        "prepared route. Preserve runtime reasoning context only when the selected model and executor "
+        "support it; otherwise compose exact owners, scopes, dependencies, and verification commands "
+        "without synthetic thinking instructions. Validate once and stop."
     ),
     "generic": (
         "Composition calibration: compose the contract fields exactly, validate the split once with "

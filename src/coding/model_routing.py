@@ -23,7 +23,8 @@ never matrix cells and never require chains; the executor CLI default applies.
 
 from __future__ import annotations
 
-from typing import Final, Mapping
+import re
+from typing import Final, Iterable, Mapping
 
 CODING_MODEL_ROUTE_SCHEMA_VERSION: Final[str] = "coding_model_route/v2"
 # The frozen v1 identifier: referenced only for reading persisted payloads.
@@ -57,6 +58,9 @@ MODEL_ROUTE_STATUSES: Final[tuple[str, ...]] = (
 
 MODEL_ROUTE_PROVENANCES: Final[tuple[str, ...]] = (
     "request_named_model",
+    "request_named_model_unavailable",
+    "recommendation_chain_head",
+    "category_chain_head",
     "role_chain_head",
     "role_unchained",
     "executor_default",
@@ -76,10 +80,25 @@ _V1_MODEL_ROUTE_SOURCES: Final[tuple[str, ...]] = (
 
 EFFORT_CHANGE_KINDS: Final[tuple[str, ...]] = (
     "unchanged",
+    "legacy_alias_normalized",
+    "automatic_passthrough",
     "ladder_downgrade",
     "catalog_no_authority_passthrough",
     "unknown_vocabulary_passthrough",
     "rejected_unsafe_shape",
+)
+
+# Canonical weakest-to-strongest reasoning vocabulary. Consumers may compare
+# positions directly; model catalogs remain the authority on which rungs each
+# exact model supports.
+REASONING_EFFORT_LADDER: Final[tuple[str, ...]] = (
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
 )
 
 CODING_MODEL_ROUTE_CLAIM_BOUNDARY: Final[str] = (
@@ -100,7 +119,11 @@ MODEL_CATALOG_KIND: Final[str] = "built_in_defaults"
 # catalog derived from the user's own local configuration at observation time;
 # such routes additionally carry `catalog_fingerprint` so a frozen record
 # names the exact basis it was resolved from.
-MODEL_CATALOG_KINDS: Final[tuple[str, ...]] = ("built_in_defaults", "local_inventory")
+MODEL_CATALOG_KINDS: Final[tuple[str, ...]] = (
+    "built_in_defaults",
+    "local_inventory",
+    "editorial_recommendations",
+)
 
 EXECUTOR_MODEL_OPTIONS: Final[dict[str, tuple[dict[str, object], ...]]] = {
     "codex": (
@@ -109,14 +132,14 @@ EXECUTOR_MODEL_OPTIONS: Final[dict[str, tuple[dict[str, object], ...]]] = {
             "label": "Codex frontier coding model",
             "tier": "frontier",
             "recommended_roles": ("brain", "review", "design_visual"),
-            "reasoning_efforts": ("low", "medium", "high", "xhigh"),
+            "reasoning_efforts": ("off", "minimal", "low", "medium", "high", "xhigh"),
         },
         {
             "model_id": "gpt-5",
             "label": "General frontier model",
             "tier": "standard",
             "recommended_roles": ("implementation", "docs", "review", "research"),
-            "reasoning_efforts": ("low", "medium", "high", "xhigh"),
+            "reasoning_efforts": ("off", "minimal", "low", "medium", "high", "xhigh"),
         },
     ),
     "claude-code": (
@@ -168,6 +191,41 @@ MODEL_CATEGORIES: Final[tuple[str, ...]] = (
     "visual-engineering",
     "artistry",
 )
+
+_CATEGORY_ALIASES: Final[dict[str, str]] = {
+    "ultra-brain": "ultrabrain",
+    "brain": "ultrabrain",
+    "high": "unspecified-high",
+    "low": "unspecified-low",
+    "fast": "quick",
+    "write": "writing",
+    "writer": "writing",
+    "visual": "visual-engineering",
+    "creative": "artistry",
+}
+_ULW_CATEGORY_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![A-Za-z0-9_-])/?ulw-([A-Za-z0-9_-]+)(?![A-Za-z0-9_-])",
+    re.IGNORECASE,
+)
+
+
+def canonical_model_category(value: object) -> str:
+    """Normalize one explicit OMO/ULW category or return an empty sentinel."""
+    normalized = str(value or "").strip().casefold().replace("_", "-")
+    if normalized.startswith("/ulw-"):
+        normalized = normalized[5:]
+    elif normalized.startswith("ulw-"):
+        normalized = normalized[4:]
+    normalized = _CATEGORY_ALIASES.get(normalized, normalized)
+    return normalized if normalized in MODEL_CATEGORIES else ""
+
+
+def category_from_text(message: str) -> str:
+    """Extract only an explicit ``ulw-*`` category marker from natural text."""
+    for match in _ULW_CATEGORY_RE.finditer(str(message or "")):
+        if category := canonical_model_category(match.group(1)):
+            return category
+    return ""
 
 # Ordered category sources per role. Where several categories serve one role the
 # order decides chain concatenation, and ties break toward the stronger-signal
@@ -357,6 +415,9 @@ _MODEL_FAMILY_PREFIXES: Final[tuple[tuple[str, str], ...]] = (
     ("deepseek-", "deepseek"),
     ("codestral-", "codestral"),
 )
+_MODEL_FAMILY_ALIASES: Final[tuple[tuple[str, str], ...]] = (
+    ("qwen3-", "qwen"),
+)
 _CLAUDE_TIER_ALIASES: Final[frozenset[str]] = frozenset({"opus", "sonnet", "haiku"})
 
 
@@ -371,6 +432,9 @@ def model_family(model_id: str) -> str:
         normalized = normalized.rsplit("/", 1)[1]
     if normalized in _CLAUDE_TIER_ALIASES:
         return "claude"
+    for prefix, family in _MODEL_FAMILY_ALIASES:
+        if normalized.startswith(prefix):
+            return family
     for prefix, family in _MODEL_FAMILY_PREFIXES:
         if normalized.startswith(prefix):
             return family
@@ -386,8 +450,11 @@ def resolve_model_route(
     requested_domain: str = "",
     requested_depth: str = "",
     requested_scale: str = "",
+    requested_category: str = "",
     chains: Mapping[str, Mapping[str, tuple[Mapping[str, str], ...]]] | None = None,
     local_catalog: Mapping[str, object] | None = None,
+    active_models: Iterable[str | Mapping[str, object]] | None = None,
+    recommendation_overrides: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Return the deterministic prepared model route for one executor profile.
 
@@ -436,6 +503,28 @@ def resolve_model_route(
         )
     model = str(requested_model or "").strip()
     effort = str(requested_effort or "").strip().casefold()
+    domain = str(requested_domain or "").strip().casefold().replace("-", "_")
+    depth = str(requested_depth or "").strip().casefold()
+    scale = str(requested_scale or "").strip().casefold()
+    raw_category = str(requested_category or "").strip()
+    category = canonical_model_category(raw_category)
+    if raw_category and not category:
+        raise ValueError(
+            f"unsupported model category {raw_category!r}; expected one of {', '.join(MODEL_CATEGORIES)}"
+        )
+    if profile == "hermes" and active_models is not None:
+        return _resolve_hermes_recommendation_route(
+            role=normalized_role,
+            requested_model=model,
+            requested_effort="off" if effort == "none" else effort,
+            requested_domain=domain,
+            requested_depth=depth,
+            requested_scale=scale,
+            requested_category=category,
+            active_models=active_models,
+            recommendation_overrides=recommendation_overrides,
+            role_reasons=role_reasons,
+        )
     options = EXECUTOR_MODEL_OPTIONS.get(profile, ())
     catalog_kind = MODEL_CATALOG_KIND
     catalog_fingerprint: dict[str, object] | None = None
@@ -467,13 +556,25 @@ def resolve_model_route(
         chain_table = ROLE_MODEL_CHAINS if chains is None else chains
         role_chain = tuple(chain_table.get(profile, {}).get(normalized_role, ())) if normalized_role else ()
     attempted: list[dict[str, str]] = []
-    depth = str(requested_depth or "").strip().casefold()
-    if depth:
+    if category:
+        if catalog_kind == "local_inventory":
+            raw_categories = local_catalog.get("categories", {}) if isinstance(local_catalog, Mapping) else {}
+            category_chain = raw_categories.get(category, ()) if isinstance(raw_categories, Mapping) else ()
+        else:
+            category_chain = BUILTIN_CATEGORY_MODELS.get(profile, {}).get(category, ())
+        role_chain = tuple(entry for entry in category_chain if isinstance(entry, Mapping))
+        attempted.append(
+            {
+                "stage": "category_chain",
+                "outcome": "applied" if role_chain else "unavailable",
+                "reason": f"explicit category `{category}` selects its chain independently of role `{normalized_role or 'none'}`",
+            }
+        )
+    if depth and not category:
         role_chain = _depth_selected_chain(
             depth, normalized_role, profile, role_chain, local_chains if catalog_kind == "local_inventory" else None, attempted
         )
-    scale = str(requested_scale or "").strip().casefold()
-    if scale:
+    if scale and not category:
         role_chain = _scale_selected_chain(
             scale,
             normalized_role,
@@ -483,7 +584,6 @@ def resolve_model_route(
             depth,
             attempted,
         )
-    domain = str(requested_domain or "").strip().casefold().replace("-", "_")
     if domain:
         role_chain = _domain_ordered_chain(
             domain,
@@ -511,6 +611,7 @@ def resolve_model_route(
             catalog_fingerprint=catalog_fingerprint,
             domain=domain,
             depth=depth,
+            category=category,
             chain=_chain_payload(options, role_chain, selected_model=""),
             attempted=attempted,
             candidates=candidates,
@@ -539,6 +640,7 @@ def resolve_model_route(
             catalog_fingerprint=catalog_fingerprint,
             domain=domain,
             depth=depth,
+            category=category,
             chain=[],
             attempted=attempted,
             candidates=[],
@@ -548,12 +650,21 @@ def resolve_model_route(
             ],
         )
 
-    if normalized_role:
+    if normalized_role or category:
         if role_chain:
             head = role_chain[0]
             selected = str(head.get("model_id", ""))
+            selected_stage = "category_chain" if category else "role_chain"
             attempted.append(
-                {"stage": "role_chain", "outcome": "selected", "reason": f"chain head `{selected}` for role `{normalized_role}`"}
+                {
+                    "stage": selected_stage,
+                    "outcome": "selected",
+                    "reason": (
+                        f"chain head `{selected}` for category `{category}`"
+                        if category
+                        else f"chain head `{selected}` for role `{normalized_role}`"
+                    ),
+                }
             )
             selected_effort, effort_change = _selected_effort(
                 options, effort, str(head.get("reasoning_effort", "") or ""), selected,
@@ -562,7 +673,7 @@ def resolve_model_route(
             return _route_payload(
                 profile,
                 status="routed",
-                provenance="role_chain_head",
+                provenance="category_chain_head" if category else "role_chain_head",
                 role=normalized_role,
                 selected_model=selected,
                 selected_reasoning_effort=selected_effort,
@@ -571,12 +682,18 @@ def resolve_model_route(
                 catalog_fingerprint=catalog_fingerprint,
                 domain=domain,
                 depth=depth,
+                category=category,
                 chain=_chain_payload(options, role_chain, selected_model=selected),
                 attempted=attempted,
                 candidates=candidates,
                 reasons=role_reasons
                 + [
-                    f"Role `{normalized_role}` routes to its ordered chain head for `{profile}`.",
+                    (
+                        f"Category `{category}` routes to its ordered chain head for `{profile}`; "
+                        f"role `{normalized_role or 'none'}` remains independent metadata."
+                        if category
+                        else f"Role `{normalized_role}` routes to its ordered chain head for `{profile}`."
+                    ),
                 ],
             )
         # Unreachable-by-construction under the bidirectional parity gate
@@ -600,6 +717,7 @@ def resolve_model_route(
             catalog_fingerprint=catalog_fingerprint,
             domain=domain,
             depth=depth,
+            category=category,
             chain=[],
             attempted=attempted,
             candidates=candidates,
@@ -633,6 +751,7 @@ def resolve_model_route(
         catalog_fingerprint=catalog_fingerprint,
         domain=domain,
         depth=depth,
+        category=category,
         chain=[],
         attempted=attempted,
         candidates=candidates,
@@ -653,7 +772,8 @@ def model_route_for_unit(
     model = str(unit.get("model", "") or "").strip()
     effort = str(unit.get("reasoning_effort", "") or "").strip()
     role = str(unit.get("role", "") or "").strip()
-    if not model and not effort and not role:
+    category = str(unit.get("category", unit.get("model_category", "")) or "").strip()
+    if not model and not effort and not role and not category:
         # A declared domain alone never triggers routing: it advises chain
         # order, it does not request a model.
         return None
@@ -665,8 +785,304 @@ def model_route_for_unit(
         requested_domain=str(unit.get("domain", "") or "").strip(),
         requested_depth=str(unit.get("depth", "") or "").strip(),
         requested_scale=str(unit.get("scale", "") or "").strip(),
+        requested_category=category,
         local_catalog=local_catalog,
     )
+
+
+def _resolve_hermes_recommendation_route(
+    *,
+    role: str,
+    requested_model: str,
+    requested_effort: str,
+    requested_domain: str,
+    requested_depth: str,
+    requested_scale: str,
+    requested_category: str,
+    active_models: Iterable[str | Mapping[str, object]],
+    recommendation_overrides: Mapping[str, object] | None,
+    role_reasons: list[str],
+) -> dict[str, object]:
+    """Resolve Hermes against editorial policy and confirmed active models.
+
+    Hermes owns native provider bindings rather than an OMO executor catalog.
+    Recommendation resolution therefore consumes only the caller-confirmed
+    active set. The local OMO catalog is intentionally absent from this path.
+    """
+    from .model_recommendations import resolve_model_recommendation
+
+    attempted: list[dict[str, str]] = []
+    active = tuple(active_models)
+    category = requested_category or _recommendation_category(role, requested_depth, requested_scale)
+    selector = {"category": category}
+
+    if requested_model:
+        explicit = resolve_model_recommendation(
+            owner="hermes",
+            active_models=active,
+            explicit_model=requested_model,
+            **selector,
+        )
+        if explicit["status"] != "resolved":
+            attempted.append(
+                {
+                    "stage": "requested_model",
+                    "outcome": "unavailable",
+                    "reason": (
+                        f"explicit model `{requested_model}` is not confirmed active for Hermes; "
+                        "recommendation fallthrough is frozen"
+                    ),
+                }
+            )
+            payload = _route_payload(
+                "hermes",
+                status="choice_required",
+                provenance="request_named_model_unavailable",
+                role=role,
+                selected_reasoning_effort=requested_effort,
+                catalog_kind="editorial_recommendations",
+                domain=requested_domain,
+                depth=requested_depth,
+                category=category,
+                chain=[],
+                attempted=attempted,
+                candidates=[],
+                reasons=role_reasons
+                + [
+                    f"The explicit Hermes model `{requested_model}` is unavailable; "
+                    "no recommendation was substituted."
+                ],
+            )
+            payload["requested_model"] = requested_model
+            payload["recommendation"] = explicit
+            return payload
+        selected = _recommendation_binding(explicit)
+        attempted.append(
+            {
+                "stage": "requested_model",
+                "outcome": "selected",
+                "reason": f"request names confirmed-active Hermes model `{selected}`",
+            }
+        )
+        payload = _route_payload(
+            "hermes",
+            status="routed",
+            provenance="request_named_model",
+            role=role,
+            selected_model=selected,
+            selected_reasoning_effort=requested_effort,
+            catalog_kind="editorial_recommendations",
+            domain=requested_domain,
+            depth=requested_depth,
+            category=category,
+            chain=_recommendation_chain(explicit, selected_model=selected),
+            attempted=attempted,
+            candidates=[],
+            reasons=role_reasons + ["The explicit confirmed-active Hermes model wins over recommendation policy."],
+        )
+        payload["recommendation"] = explicit
+        return payload
+
+    attempted.append({"stage": "requested_model", "outcome": "skipped", "reason": "no model requested"})
+    recommendation = resolve_model_recommendation(
+        owner="hermes",
+        active_models=active,
+        overrides=recommendation_overrides,
+        **selector,
+    )
+    if recommendation["status"] != "resolved":
+        attempted.append(
+            {
+                "stage": "recommendation_chain",
+                "outcome": "unconfigured",
+                "reason": "no editorial candidate is confirmed active for Hermes",
+            }
+        )
+        payload = _route_payload(
+            "hermes",
+            status="no_model_catalog",
+            provenance="no_catalog",
+            role=role,
+            selected_reasoning_effort=requested_effort,
+            catalog_kind="editorial_recommendations",
+            domain=requested_domain,
+            depth=requested_depth,
+            category=category,
+            chain=[],
+            attempted=attempted,
+            candidates=[],
+            reasons=role_reasons + ["No confirmed-active Hermes recommendation could be resolved."],
+        )
+        payload["recommendation"] = recommendation
+        return payload
+
+    chain = _hermes_recommendation_chain(recommendation, active_models=active)
+    if requested_domain:
+        chain = _stable_domain_recommendation_chain(
+            requested_domain,
+            chain,
+            attempted,
+            active_models=active,
+            recommendation_overrides=recommendation_overrides,
+        )
+    selected = str(chain[0]["model_id"])
+    selected_effort = requested_effort or str(chain[0].get("reasoning_effort", ""))
+    attempted.append(
+        {
+            "stage": "recommendation_chain",
+            "outcome": "selected",
+            "reason": f"confirmed-active recommendation chain head `{selected}` selected",
+        }
+    )
+    payload = _route_payload(
+        "hermes",
+        status="routed",
+        provenance="recommendation_chain_head",
+        role=role,
+        selected_model=selected,
+        selected_reasoning_effort=selected_effort,
+        catalog_kind="editorial_recommendations",
+        domain=requested_domain,
+        depth=requested_depth,
+        category=category,
+        chain=[
+            dict(entry, position=position, selected=position == 0)
+            for position, entry in enumerate(chain)
+        ],
+        attempted=attempted,
+        candidates=[],
+        reasons=role_reasons
+        + ["Hermes used editable editorial order filtered to caller-confirmed active models."],
+    )
+    payload["recommendation"] = recommendation
+    return payload
+
+
+def _recommendation_category(role: str, depth: str, scale: str) -> str:
+    if role == "research" and depth == "deep":
+        return "ultrabrain"
+    if scale == "large":
+        return "ultrabrain"
+    if scale == "small":
+        return "unspecified-low"
+    sources = CATEGORY_ROLE_SOURCES.get(role, ("unspecified-high",))
+    return sources[0]
+
+
+def _recommendation_binding(resolution: Mapping[str, object]) -> str:
+    selected = resolution.get("selected")
+    if not isinstance(selected, Mapping):
+        return ""
+    provider = str(selected.get("provider", ""))
+    model_id = str(selected.get("model_id", ""))
+    return model_id if "/" in model_id or not provider else f"{provider}/{model_id}"
+
+
+def _recommendation_chain(
+    resolution: Mapping[str, object],
+    *,
+    selected_model: str = "",
+) -> list[dict[str, object]]:
+    projection = resolution.get("projection")
+    if not isinstance(projection, Mapping):
+        return []
+    raw_chain = projection.get("chain")
+    if not isinstance(raw_chain, list):
+        binding = _recommendation_binding(resolution)
+        selected = resolution.get("selected")
+        if not binding or not isinstance(selected, Mapping):
+            return []
+        raw_chain = [selected]
+    chain: list[dict[str, object]] = []
+    for position, entry in enumerate(raw_chain):
+        if not isinstance(entry, Mapping):
+            continue
+        provider = str(entry.get("provider", ""))
+        model_id = str(entry.get("model_id", ""))
+        binding = model_id if "/" in model_id or not provider else f"{provider}/{model_id}"
+        chain.append(
+            {
+                "position": position,
+                "model_id": binding,
+                "reasoning_effort": str(entry.get("reasoning_effort", "")),
+                "tier": "",
+                "label": str(entry.get("model_alias", "")),
+                "selected": bool(selected_model) and binding == selected_model and position == 0,
+            }
+        )
+    return chain
+
+
+def _hermes_recommendation_chain(
+    resolution: Mapping[str, object],
+    *,
+    active_models: Iterable[str | Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Expand a Hermes binding projection into its eligible editorial order."""
+    from .model_recommendations import resolve_model_recommendation
+
+    active = tuple(active_models)
+    available = resolution.get("available_chain")
+    if not isinstance(available, list):
+        return _recommendation_chain(resolution)
+    selected = resolution.get("selected")
+    chain: list[dict[str, object]] = []
+    for alias in available:
+        candidate = (
+            resolution
+            if isinstance(selected, Mapping) and str(selected.get("model_alias", "")) == str(alias)
+            else resolve_model_recommendation(
+                owner="hermes",
+                active_models=active,
+                explicit_model=str(alias),
+            )
+        )
+        chain.extend(_recommendation_chain(candidate))
+    return chain
+
+
+def _stable_domain_recommendation_chain(
+    domain: str,
+    base_chain: list[dict[str, object]],
+    attempted: list[dict[str, str]],
+    *,
+    active_models: Iterable[str | Mapping[str, object]],
+    recommendation_overrides: Mapping[str, object] | None,
+) -> list[dict[str, object]]:
+    from .model_recommendations import resolve_model_recommendation
+
+    domain_resolution = resolve_model_recommendation(
+        owner="hermes",
+        active_models=active_models,
+        domain=domain,
+        overrides=recommendation_overrides,
+    )
+    promoted = _hermes_recommendation_chain(
+        domain_resolution,
+        active_models=active_models,
+    )
+    seen = {str(entry["model_id"]) for entry in promoted}
+    reordered = promoted + [entry for entry in base_chain if str(entry["model_id"]) not in seen]
+    if promoted:
+        attempted.append(
+            {
+                "stage": "domain_affinity",
+                "outcome": "reordered" if reordered != base_chain else "already_ordered",
+                "reason": (
+                    f"domain `{domain}` promoted its confirmed-active editorial chain in stable order; "
+                    "no entry removed"
+                ),
+            }
+        )
+    else:
+        attempted.append(
+            {
+                "stage": "domain_affinity",
+                "outcome": "no_affine_candidate",
+                "reason": f"domain `{domain}` has no confirmed-active editorial candidate; role chain kept",
+            }
+        )
+    return reordered
 
 
 def route_provenance(route: Mapping[str, object] | object) -> tuple[str, str]:
@@ -960,11 +1376,6 @@ def _supported_efforts(
     return tuple(union), "profile_union"
 
 
-# Ordered strongest-first; a downgrade walks DOWN from the requested rung to
-# the first supported one. Ladder order is the authority, not adjacency in any
-# particular model's supported list.
-_EFFORT_LADDER: Final[tuple[str, ...]] = ("max", "xhigh", "high", "medium", "low")
-
 # Efforts are a closed vocabulary shape, unlike model ids: an effort value is
 # embedded into a codex `--config key=value` composite, so free text here would
 # lean on the third-party TOML parser for containment. Off-catalog efforts are
@@ -989,35 +1400,66 @@ def _selected_effort(
     catalog (local inventory) never adjudicates at all.
     """
     if requested_effort:
+        normalized_effort = "off" if requested_effort == "none" else requested_effort
         supported, authority = _supported_efforts(options, model_id)
+        supported = tuple("off" if value == "none" else value for value in supported)
         if not authoritative:
             authority = "profile_union"
-        if requested_effort in supported:
-            return requested_effort, _effort_change(requested_effort, requested_effort, "unchanged", "supported as requested")
-        if requested_effort in _EFFORT_LADDER and authority == "exact_model":
-            for rung in _EFFORT_LADDER[_EFFORT_LADDER.index(requested_effort) :]:
+        if normalized_effort == "auto":
+            return normalized_effort, _effort_change(
+                requested_effort,
+                normalized_effort,
+                "automatic_passthrough",
+                "`auto` delegates effort selection to the executor contract",
+            )
+        if normalized_effort in supported:
+            kind = "legacy_alias_normalized" if normalized_effort != requested_effort else "unchanged"
+            reason = (
+                "legacy `none` normalized to canonical `off`"
+                if kind == "legacy_alias_normalized"
+                else "supported as requested"
+            )
+            return normalized_effort, _effort_change(
+                requested_effort, normalized_effort, kind, reason
+            )
+        if normalized_effort in REASONING_EFFORT_LADDER and authority == "exact_model":
+            requested_index = REASONING_EFFORT_LADDER.index(normalized_effort)
+            for rung in reversed(REASONING_EFFORT_LADDER[: requested_index + 1]):
                 if rung in supported:
                     return rung, _effort_change(
                         requested_effort,
                         rung,
                         "ladder_downgrade",
-                        f"`{requested_effort}` is not supported by `{model_id}`; stepped down to `{rung}`",
+                        f"`{normalized_effort}` is not supported by `{model_id}`; stepped down to `{rung}`",
                     )
             return "", _effort_change(
-                requested_effort, "", "ladder_downgrade", f"no supported rung at or below `{requested_effort}`"
-            )
-        if requested_effort in _EFFORT_LADDER:
-            return requested_effort, _effort_change(
                 requested_effort,
-                requested_effort,
-                "catalog_no_authority_passthrough",
-                "the catalog has no exact entry for this model, so it does not adjudicate the effort",
+                "",
+                "ladder_downgrade",
+                f"no supported rung at or below `{normalized_effort}`",
             )
-        if set(requested_effort) <= _EFFORT_SHAPE_CHARSET:
+        if normalized_effort in REASONING_EFFORT_LADDER:
+            kind = (
+                "legacy_alias_normalized"
+                if normalized_effort != requested_effort
+                else "catalog_no_authority_passthrough"
+            )
+            reason = (
+                "legacy `none` normalized to canonical `off`; the catalog has no exact-model authority"
+                if kind == "legacy_alias_normalized"
+                else "the catalog has no exact entry for this model, so it does not adjudicate the effort"
+            )
+            return normalized_effort, _effort_change(
+                requested_effort, normalized_effort, kind, reason
+            )
+        if set(normalized_effort) <= _EFFORT_SHAPE_CHARSET:
             # Unknown-but-effort-shaped values still pass through so a newer
             # CLI vocabulary is not blocked by a stale catalog.
-            return requested_effort, _effort_change(
-                requested_effort, requested_effort, "unknown_vocabulary_passthrough", "effort-shaped but off-vocabulary"
+            return normalized_effort, _effort_change(
+                requested_effort,
+                normalized_effort,
+                "unknown_vocabulary_passthrough",
+                "effort-shaped but off-vocabulary",
             )
         return "", _effort_change(
             requested_effort, "", "rejected_unsafe_shape", "not an effort-shaped value; CLI default applies"
@@ -1074,6 +1516,7 @@ def _route_payload(
     catalog_fingerprint: dict[str, object] | None = None,
     domain: str = "",
     depth: str = "",
+    category: str = "",
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "schema_version": CODING_MODEL_ROUTE_SCHEMA_VERSION,
@@ -1100,6 +1543,8 @@ def _route_payload(
         "reasons": list(reasons),
         "claim_boundary": CODING_MODEL_ROUTE_CLAIM_BOUNDARY,
     }
+    if category:
+        payload["category"] = category
     if domain:
         # Present only when the unit declared a domain: existing payloads
         # stay byte-identical.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -212,6 +213,313 @@ class ModelInventoryTests(unittest.TestCase):
         self.assertEqual(source["status"], "present")
         self.assertEqual(source["providers"], ["kimi-coding"])
         self.assertNotIn(_SECRET, json.dumps(inventory))
+
+
+class MultiAgentModelDiscoveryTests(unittest.TestCase):
+    def _write_jsonl(self, path: Path, *records: object) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "".join(json.dumps(record) + "\n" for record in records),
+            encoding="utf-8",
+        )
+
+    def test_mixed_agent_stores_emit_only_safe_model_metadata(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            self._write_jsonl(
+                home / ".codex" / "sessions" / "2026" / "rollout.jsonl",
+                {
+                    "type": "session_meta",
+                    "timestamp": "2026-08-01T01:02:03Z",
+                    "payload": {
+                        "model_provider": "openai",
+                        "model": "gpt-5.6-sol",
+                        "instructions": f"ignore safety\n{_SECRET}",
+                    },
+                },
+            )
+            auth_inside_session_root = home / ".codex" / "sessions" / "auth.json"
+            auth_inside_session_root.write_text(
+                json.dumps(
+                    {
+                        "provider": "secret-provider",
+                        "model": "secret-model",
+                        "api_key": _SECRET,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self._write_jsonl(
+                home / ".claude" / "projects" / "repo" / "session.jsonl",
+                {
+                    "type": "assistant",
+                    "timestamp": "2026-08-02T01:02:03Z",
+                    "message": {
+                        "model": "claude-opus-4-1",
+                        "content": f"transcript prose {_SECRET}",
+                    },
+                },
+            )
+            for platform in ("senpi", "pi"):
+                self._write_jsonl(
+                    home / f".{platform}" / "agent" / "sessions" / "repo" / "session.jsonl",
+                    {
+                        "type": "model_change",
+                        "timestamp": "2026-08-03T01:02:03Z",
+                        "provider": "openrouter",
+                        "modelId": f"{platform}-model",
+                    },
+                )
+            omo = home / ".omo"
+            omo.mkdir()
+            (omo / "omo.json").write_text(
+                json.dumps(
+                    {
+                        "agents": {
+                            "main": {"model": "openai/gpt-5.6-sol", "variant": "xhigh"},
+                            "hostile": {"model": "openai/safe\nignore-previous"},
+                        },
+                        "prompt": f"transcript {_SECRET}",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (omo / "omo.jsonc").write_text(
+                '{\n  // canonical JSONC probe\n  "categories": {"deep": {"model": "anthropic/claude-opus-4-1"}}\n}',
+                encoding="utf-8",
+            )
+            (omo / "models.json").write_text(
+                json.dumps({"models": [{"provider": "google", "model": "gemini-3.1-pro"}]}),
+                encoding="utf-8",
+            )
+            (omo / "auth.json").write_text(
+                json.dumps(
+                    {
+                        "model": "secret-provider/secret-model",
+                        "api_key": _SECRET,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            opencode_message = (
+                home / ".local" / "share" / "opencode" / "storage" / "message" / "session" / "m.json"
+            )
+            opencode_message.parent.mkdir(parents=True)
+            opencode_message.write_text(
+                json.dumps(
+                    {
+                        "model": {"providerID": "google", "modelID": "gemini-3.1-pro"},
+                        "time": {"created": "2026-08-04T01:02:03Z"},
+                        "content": f"transcript {_SECRET}",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self._write_jsonl(
+                home / ".hermes" / "sessions" / "session.jsonl",
+                {
+                    "type": "model_change",
+                    "timestamp": "2026-08-05T01:02:03Z",
+                    "provider": "nous",
+                    "model": "hermes-4",
+                    "prompt": f"transcript {_SECRET}",
+                },
+            )
+
+            inventory = local_model_inventory(home)
+
+        discovery = inventory["model_discovery"]
+        self.assertEqual(discovery["schema_version"], "model_discovery/v1")
+        self.assertEqual(
+            set(discovery["sources"]),
+            {"codex", "claude-code", "senpi", "pi", "omo", "opencode", "hermes", "omp"},
+        )
+        observations = discovery["observations"]
+        observed = {
+            (entry["source"], entry["provider"], entry["model_id"], entry["status"])
+            for entry in observations
+        }
+        self.assertIn(("codex", "openai", "gpt-5.6-sol", "observed_before"), observed)
+        self.assertIn(("claude-code", "anthropic", "claude-opus-4-1", "observed_before"), observed)
+        self.assertIn(("senpi", "openrouter", "senpi-model", "observed_before"), observed)
+        self.assertIn(("pi", "openrouter", "pi-model", "observed_before"), observed)
+        self.assertIn(("omo", "openai", "gpt-5.6-sol", "confirmed_active"), observed)
+        self.assertIn(("opencode", "google", "gemini-3.1-pro", "observed_before"), observed)
+        self.assertIn(("hermes", "nous", "hermes-4", "observed_before"), observed)
+        serialized = json.dumps(discovery)
+        self.assertNotIn(_SECRET, serialized)
+        self.assertNotIn("transcript prose", serialized)
+        self.assertNotIn("ignore-previous", serialized)
+        self.assertNotIn("secret-provider", serialized)
+        self.assertNotIn(str(home), serialized)
+        self.assertTrue(all(source["fingerprint"] for source in discovery["sources"].values()))
+
+    def test_unknown_omp_layout_is_explicitly_unverified(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".omp" / "unknown").mkdir(parents=True)
+            (home / ".omp" / "unknown" / "models.json").write_text(
+                json.dumps({"model": "must/not-be-read"}),
+                encoding="utf-8",
+            )
+            discovery = local_model_inventory(home)["model_discovery"]
+        self.assertEqual(discovery["sources"]["omp"]["status"], "layout_unverified")
+        self.assertFalse(any(entry["source"] == "omp" for entry in discovery["observations"]))
+
+    def test_discovery_rejects_symlinks_to_credentials_outside_fixed_roots(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            outside = Path(tmp) / "credentials"
+            outside.mkdir(parents=True)
+            leaked_record = json.dumps(
+                {
+                    "type": "model_change",
+                    "provider": "nous",
+                    "model": "leaked-model-42",
+                    "api_key": _SECRET,
+                }
+            )
+            (outside / "session.jsonl").write_text(leaked_record + "\n", encoding="utf-8")
+
+            codex_root = home / ".codex"
+            codex_root.mkdir(parents=True)
+            (codex_root / "sessions").symlink_to(outside, target_is_directory=True)
+            hermes_root = home / ".hermes" / "sessions"
+            hermes_root.mkdir(parents=True)
+            (hermes_root / "leak.jsonl").symlink_to(outside / "session.jsonl")
+
+            discovery = local_model_inventory(home)["model_discovery"]
+
+        serialized = json.dumps(discovery)
+        self.assertNotIn(_SECRET, serialized)
+        self.assertNotIn("leaked-model-42", serialized)
+        self.assertFalse(
+            any(entry["source"] in {"codex", "hermes"} for entry in discovery["observations"])
+        )
+
+    def test_jsonl_stops_reading_when_record_limit_is_reached(self) -> None:
+        class ReadlineBudget(io.BytesIO):
+            def __init__(self, initial_bytes: bytes, *, allowed_reads: int) -> None:
+                super().__init__(initial_bytes)
+                self.allowed_reads = allowed_reads
+                self.readline_calls = 0
+
+            def readline(self, size: int = -1, /) -> bytes:
+                self.readline_calls += 1
+                if self.readline_calls > self.allowed_reads:
+                    raise AssertionError("JSONL discovery buffered records beyond its limit")
+                return super().readline(size)
+
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            session = home / ".codex" / "sessions" / "large.jsonl"
+            self._write_jsonl(
+                session,
+                {
+                    "type": "session_meta",
+                    "payload": {"model_provider": "openai", "model": "first"},
+                },
+            )
+            record = (
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {"model_provider": "openai", "model": "streamed"},
+                    }
+                ).encode()
+                + b"\n"
+            )
+            guarded = ReadlineBudget(record * 100_000, allowed_reads=1)
+            original_open = Path.open
+
+            def guarded_open(path: Path, *args: object, **kwargs: object) -> object:
+                if path == session:
+                    return guarded
+                return original_open(path, *args, **kwargs)
+
+            with mock.patch.object(Path, "open", new=guarded_open):
+                discovery = local_model_inventory(
+                    home,
+                    discovery_limits={"max_records_per_source": 1},
+                )["model_discovery"]
+
+        source = discovery["sources"]["codex"]
+        self.assertEqual(source["scanned_records"], 1)
+        self.assertIn("record_count", source["truncated_reasons"])
+        self.assertEqual(guarded.readline_calls, 1)
+
+    def test_count_depth_size_and_deadline_limits_report_truncated(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            codex_root = home / ".codex" / "sessions"
+            for index in range(2):
+                self._write_jsonl(
+                    codex_root / f"{index}.jsonl",
+                    {
+                        "type": "session_meta",
+                        "payload": {"model_provider": "openai", "model": f"gpt-{index}"},
+                    },
+                )
+            deep = home / ".claude" / "projects"
+            for segment in range(9):
+                deep /= str(segment)
+            self._write_jsonl(deep / "session.jsonl", {"message": {"model": "claude-deep"}})
+            self._write_jsonl(
+                home / ".senpi" / "agent" / "sessions" / "oversized.jsonl",
+                {
+                    "type": "model_change",
+                    "provider": "openrouter",
+                    "modelId": "x" * 70_000,
+                },
+            )
+            inventory = local_model_inventory(
+                home,
+                discovery_limits={
+                    "max_records_per_source": 1,
+                    "max_record_bytes": 65_536,
+                    "max_depth": 8,
+                    "soft_budget_seconds": 5.0,
+                },
+            )
+        sources = inventory["model_discovery"]["sources"]
+        self.assertEqual(sources["codex"]["status"], "truncated")
+        self.assertEqual(sources["claude-code"]["status"], "truncated")
+        self.assertEqual(sources["senpi"]["status"], "truncated")
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            self._write_jsonl(
+                home / ".pi" / "agent" / "sessions" / "deadline.jsonl",
+                {"type": "model_change", "provider": "openrouter", "modelId": "pi-model"},
+            )
+            clock_values = iter((0.0, 0.0, 0.0, 0.0, 6.0))
+            deadline_inventory = local_model_inventory(
+                home,
+                discovery_limits={"soft_budget_seconds": 5.0},
+                discovery_clock=lambda: next(clock_values, 6.0),
+            )
+        self.assertEqual(
+            deadline_inventory["model_discovery"]["sources"]["pi"]["status"],
+            "truncated",
+        )
+
+    def test_corrupt_store_does_not_hide_other_sources(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            bad = home / ".codex" / "sessions" / "bad.jsonl"
+            bad.parent.mkdir(parents=True)
+            bad.write_text("{not-json\n", encoding="utf-8")
+            self._write_jsonl(
+                home / ".pi" / "agent" / "sessions" / "good.jsonl",
+                {
+                    "type": "model_change",
+                    "provider": "openrouter",
+                    "modelId": "pi-good",
+                },
+            )
+            discovery = local_model_inventory(home)["model_discovery"]
+        self.assertEqual(discovery["sources"]["codex"]["status"], "unobserved")
+        self.assertEqual(discovery["sources"]["pi"]["status"], "observed_before")
+        self.assertTrue(any(entry["model_id"] == "pi-good" for entry in discovery["observations"]))
 
 
 class InventoryModelCatalogTests(unittest.TestCase):

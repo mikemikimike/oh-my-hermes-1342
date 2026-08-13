@@ -19,9 +19,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..coding.model_discovery import discover_local_models
+from ..coding.model_recommendations import (
+    MODEL_CATEGORIES,
+    MODEL_RECOMMENDATION_DOMAINS,
+    SHIPPED_MODEL_RECOMMENDATIONS,
+    resolve_model_recommendation,
+)
 from ..config_adapter import external_dirs, read_config
 from ..paths import default_hermes_home, expand_path, find_project_root
 from ..plugin_bundle.omh import hermes_memory
+from ..routing.owner_preference import owner_preference_path, validate_owner_preference
+from ..system.local_store import read_json_object_result
+from ..system.metadata_safety import require_opaque_metadata_ref
+from ..system.paths import OmhPaths
 
 CONTRACT = "hermes_config_advice/v1"
 
@@ -104,6 +115,312 @@ def _resolve_hermes_home(hermes_home: str | Path | None) -> Path:
     if hermes_home is None:
         return default_hermes_home()
     return Path(hermes_home).expanduser()
+
+
+# ---------------------------------------------------------------------------
+# Model routing status and advisory
+# ---------------------------------------------------------------------------
+
+
+def build_model_routing_status(
+    paths: OmhPaths,
+    *,
+    discovery_home: str | Path | None = None,
+) -> dict[str, object]:
+    """Join local routing metadata without claiming model execution or access."""
+    home = Path(discovery_home).expanduser() if discovery_home is not None else paths.hermes_home.parent
+    discovery = discover_local_models(home)
+    observations = discovery.get("observations", [])
+    safe_observations = [entry for entry in observations if isinstance(entry, dict)]
+    confirmed = sorted(
+        (dict(entry) for entry in safe_observations if entry.get("status") == "confirmed_active"),
+        key=_model_observation_key,
+    )
+    confirmed_keys = {(str(entry.get("provider", "")), str(entry.get("model_id", ""))) for entry in confirmed}
+    discovered_only = sorted(
+        (
+            dict(entry)
+            for entry in safe_observations
+            if entry.get("status") != "confirmed_active"
+            and (str(entry.get("provider", "")), str(entry.get("model_id", ""))) not in confirmed_keys
+        ),
+        key=_model_observation_key,
+    )
+    active_models = [
+        {
+            **entry,
+            "model_alias": str(entry.get("model_id", "")).rsplit("/", 1)[-1],
+            "provider_family": str(entry.get("provider", "")),
+        }
+        for entry in confirmed
+    ]
+    hermes = _hermes_model_status(paths.hermes_config_path, active_models)
+    maestro_categories = {
+        category: _recommendation_status(
+            resolve_model_recommendation(owner="maestro", active_models=active_models, category=category),
+            _recommendation_head("categories", category),
+        )
+        for category in MODEL_CATEGORIES
+    }
+    maestro_domains = {
+        domain: _recommendation_status(
+            resolve_model_recommendation(owner="maestro", active_models=active_models, domain=domain),
+            _recommendation_head("domain_affinities", domain),
+        )
+        for domain in MODEL_RECOMMENDATION_DOMAINS
+    }
+    owner_learning = _owner_learning_status(paths)
+    source_statuses = {
+        str(name): str(value.get("status", "unobserved"))
+        for name, value in discovery.get("sources", {}).items()
+        if isinstance(value, dict)
+    }
+    missing_heads = sorted(
+        {
+            str(value["missing_head"])
+            for value in (*maestro_categories.values(), *maestro_domains.values())
+            if value.get("missing_head")
+        }
+    )
+    next_action = _model_routing_next_action(
+        hermes=hermes,
+        owner_learning=owner_learning,
+        confirmed=confirmed,
+        missing_heads=missing_heads,
+    )
+    return {
+        "schema_version": "model_routing_status/v1",
+        "status": _model_routing_readiness(hermes, owner_learning, confirmed),
+        "models": {
+            "confirmed": confirmed,
+            "discovered_only": discovered_only,
+            "source_statuses": source_statuses,
+            "discovery_truncated": any(status == "truncated" for status in source_statuses.values()),
+        },
+        "hermes": hermes,
+        "maestro": {
+            "categories": maestro_categories,
+            "domain_affinities": maestro_domains,
+            "missing_heads": missing_heads,
+        },
+        "owner_learning": owner_learning,
+        "next_action": next_action,
+        "claim_boundary": (
+            "This report joins local metadata only. Discovered config or session history is not confirmed "
+            "model availability; confirmed-active configuration is not entitlement, credential validity, "
+            "dispatch, execution, review, CI, or merge evidence. No network request was made."
+        ),
+    }
+
+
+def check_model_routing_readiness(
+    hermes_home: str | Path | None = None,
+    *,
+    omh_home: str | Path | None = None,
+    discovery_home: str | Path | None = None,
+) -> AdviceEntry:
+    home = _resolve_hermes_home(hermes_home)
+    paths = OmhPaths(
+        omh_home=Path(omh_home).expanduser() if omh_home is not None else home.parent / ".omh",
+        hermes_home=home,
+    )
+    try:
+        status = build_model_routing_status(paths, discovery_home=discovery_home)
+    except OSError as error:
+        return AdviceEntry(
+            "model_routing_readiness",
+            "unobserved",
+            "Repair the unreadable local model metadata, then run `omh coding model-routing status`.",
+            "Bounded local model/config/preference metadata only; no provider or network observation.",
+            f"model routing metadata unreadable: {error}",
+        )
+    models = status["models"]
+    maestro = status["maestro"]
+    hermes = status["hermes"]
+    owner = status["owner_learning"]
+    observed = (
+        f"confirmed={len(models['confirmed'])} discovered_only={len(models['discovered_only'])} "
+        f"hermes={hermes['status']} aliases={len(hermes['aliases'])} "
+        f"missing_heads={len(maestro['missing_heads'])} owner_learning={owner['status']}"
+    )
+    return AdviceEntry(
+        "model_routing_readiness",
+        "ok" if status["status"] == "ready_metadata" else "advice",
+        str(status["next_action"]),
+        str(status["claim_boundary"]),
+        observed,
+    )
+
+
+def _model_observation_key(entry: dict[str, object]) -> tuple[str, ...]:
+    return tuple(str(entry.get(key, "")) for key in ("model_id", "provider", "source", "variant", "timestamp"))
+
+
+def _hermes_model_status(config_path: Path, active_models: list[dict[str, object]]) -> dict[str, object]:
+    auth = {
+        "status": "unobserved",
+        "reason": "This offline status surface does not read credentials or contact providers.",
+    }
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"status": "missing", "config_path": str(config_path), "aliases": {}, "recommendation": None, "auth": auth}
+    except (OSError, UnicodeDecodeError) as error:
+        return {
+            "status": "corrupt",
+            "config_path": str(config_path),
+            "aliases": {},
+            "error": f"unreadable: {error}",
+            "recommendation": None,
+            "auth": auth,
+        }
+    aliases, error = _parse_hermes_model_aliases(text)
+    if error:
+        return {
+            "status": "corrupt",
+            "config_path": str(config_path),
+            "aliases": {},
+            "error": error,
+            "recommendation": None,
+            "auth": auth,
+        }
+    resolution = resolve_model_recommendation(owner="hermes", active_models=active_models, role_slot="main")
+    return {
+        "status": "configured" if aliases else "aliases_unset",
+        "config_path": str(config_path),
+        "aliases": aliases,
+        "recommendation": _recommendation_status(resolution, _recommendation_head("role_suggestions", "main")),
+        "auth": auth,
+    }
+
+
+def _parse_hermes_model_aliases(text: str) -> tuple[dict[str, str], str]:
+    if "\t" in text or "\x00" in text:
+        return {}, "config contains unsupported tab indentation or NUL bytes"
+    lines = text.splitlines()
+    aliases: dict[str, str] = {}
+    in_model = False
+    in_aliases = False
+    model_indent = aliases_indent = -1
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent == 0:
+            in_model = stripped == "model:"
+            in_aliases = False
+            model_indent = 0 if in_model else -1
+            if stripped.startswith("model_aliases:"):
+                if stripped != "model_aliases:":
+                    return {}, "model_aliases must be a mapping"
+                in_aliases = True
+                aliases_indent = 0
+            continue
+        if in_model and indent > model_indent and stripped.startswith("aliases:"):
+            if stripped != "aliases:":
+                return {}, "model.aliases must be a mapping"
+            in_aliases = True
+            aliases_indent = indent
+            continue
+        if in_aliases:
+            if indent <= aliases_indent:
+                in_aliases = False
+                continue
+            if ":" not in stripped:
+                return {}, "model alias entry is malformed"
+            alias, _, target = stripped.partition(":")
+            alias = alias.strip().strip("'\"")
+            target = target.strip().strip("'\"")
+            try:
+                safe_alias = require_opaque_metadata_ref(alias, field="model alias")
+                safe_target = require_opaque_metadata_ref(target, field="model alias target")
+            except ValueError:
+                return {}, "model alias entry is malformed or unsafe"
+            aliases[safe_alias] = safe_target
+    return dict(sorted(aliases.items())), ""
+
+
+def _recommendation_head(section: str, name: str) -> str:
+    table = SHIPPED_MODEL_RECOMMENDATIONS.get(section, {})
+    chain = table.get(name, []) if isinstance(table, dict) else []
+    if not isinstance(chain, list) or not chain or not isinstance(chain[0], dict):
+        return ""
+    return str(chain[0].get("model_alias", ""))
+
+
+def _recommendation_status(resolution: dict[str, object], head: str) -> dict[str, object]:
+    selected = resolution.get("selected")
+    selected_model = str(selected.get("model_alias", "")) if isinstance(selected, dict) else ""
+    return {
+        "status": str(resolution.get("status", "unconfigured")),
+        "recommended_head": head,
+        "selected_model": selected_model,
+        "missing_head": head if head and selected_model != head else "",
+        "available_chain": list(resolution.get("available_chain", [])),
+        "inactive_candidates": list(resolution.get("inactive_candidates", [])),
+    }
+
+
+def _owner_learning_status(paths: OmhPaths) -> dict[str, object]:
+    path = owner_preference_path(paths)
+    if not path.exists():
+        return {"status": "missing", "path": str(path), "routes": {}}
+    state, error = read_json_object_result(path)
+    if error or state is None:
+        return {"status": "corrupt", "path": str(path), "error": error or "expected JSON object", "routes": {}}
+    errors = validate_owner_preference(state)
+    if errors:
+        return {"status": "corrupt", "path": str(path), "error": "; ".join(errors), "routes": {}}
+    routes: dict[str, object] = {}
+    for family, route in state.get("routes", {}).items():
+        if not isinstance(route, dict):
+            continue
+        count = int(route.get("consecutive_accepted_explicit_choices", 0) or 0)
+        route_status = "learned" if count >= 3 else "learning"
+        if count == 0 and route.get("reset_at"):
+            route_status = "reset"
+        routes[str(family)] = {
+            "status": route_status,
+            "selected_owner": str(route.get("selected_owner", "")),
+            "evidence_count": count,
+            "reset_at": str(route.get("reset_at", "")),
+            "reset_reason": str(route.get("reset_reason", "")),
+        }
+    overall = "learned" if any(value.get("status") == "learned" for value in routes.values() if isinstance(value, dict)) else "unlearned"
+    return {"status": overall, "path": str(path), "routes": routes}
+
+
+def _model_routing_readiness(
+    hermes: dict[str, object], owner: dict[str, object], confirmed: list[dict[str, str]]
+) -> str:
+    if hermes.get("status") == "corrupt" or owner.get("status") == "corrupt":
+        return "needs_repair"
+    if not confirmed:
+        return "needs_confirmation"
+    if hermes.get("status") in {"missing", "aliases_unset"}:
+        return "needs_configuration"
+    return "ready_metadata"
+
+
+def _model_routing_next_action(
+    *,
+    hermes: dict[str, object],
+    owner_learning: dict[str, object],
+    confirmed: list[dict[str, str]],
+    missing_heads: list[str],
+) -> str:
+    if hermes.get("status") == "corrupt":
+        return f"Repair the Hermes config at {hermes['config_path']}, then run `omh coding model-routing status`."
+    if owner_learning.get("status") == "corrupt":
+        return f"Repair or archive the corrupt owner preference at {owner_learning['path']}, then run `omh coding model-routing status`."
+    if not confirmed:
+        return "Confirm locally active models in OMO configuration, then run `omh coding model-routing status`."
+    if hermes.get("status") in {"missing", "aliases_unset"}:
+        return "Preview and apply Hermes model aliases for confirmed models, then run `omh coding model-routing status`."
+    if missing_heads:
+        return "Review the missing recommendation heads and keep the shown confirmed fallback or configure a confirmed replacement."
+    return "No metadata repair is required; choose an owner explicitly or use the visible learned default."
 
 
 # ---------------------------------------------------------------------------
@@ -592,11 +909,21 @@ def check_installed_skill_context_weight(
         )
 
 
-def run_config_advisories(hermes_home: str | Path | None = None) -> AdvisoryReport:
+def run_config_advisories(
+    hermes_home: str | Path | None = None,
+    *,
+    omh_home: str | Path | None = None,
+    discovery_home: str | Path | None = None,
+) -> AdvisoryReport:
     """Run every read-only inspector and return the separate advisory report."""
     return AdvisoryReport(
         contract=CONTRACT,
         entries=[
+            check_model_routing_readiness(
+                hermes_home,
+                omh_home=omh_home,
+                discovery_home=discovery_home,
+            ),
             check_auxiliary_routing_unset(hermes_home),
             check_soul_missing_or_starter(hermes_home),
             check_hermes_memory_staleness(hermes_home),

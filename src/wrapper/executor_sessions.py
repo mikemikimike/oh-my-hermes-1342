@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 from json import JSONDecodeError
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
+from ..coding.maestro import (
+    HermesNativeSelectionError,
+    Maestro,
+    PreparedExternalHandoff,
+)
 from ..context_safety import MAX_SUMMARY_CHARS, compact_context_refs, compact_progress_events, compact_visible_text
 from ..codex_progress import build_codex_session_observation
 from ..executor_progress import (
@@ -64,6 +70,91 @@ EXECUTOR_SESSION_ACTION_IDS = (
 
 class ExecutorSessionError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class _ExecutorSessionStatusAdapter:
+    paths: OmhPaths
+    session: dict[str, Any]
+
+    def status_for(self, handoff: PreparedExternalHandoff) -> Mapping[str, object]:
+        _require_matching_maestro_handoff(self.session, handoff)
+        return build_executor_session_status(self.paths, self.session)
+
+
+@dataclass(frozen=True)
+class _ExecutorSessionObservationAdapter:
+    paths: OmhPaths
+    session: dict[str, Any]
+
+    def observations_for(
+        self,
+        handoff: PreparedExternalHandoff,
+    ) -> tuple[Mapping[str, object], ...]:
+        _require_matching_maestro_handoff(self.session, handoff)
+        status = build_executor_session_status(self.paths, self.session)
+        observations: list[Mapping[str, object]] = []
+        if status.get("dispatch") == "observed":
+            observations.append(
+                {
+                    "event": "dispatch",
+                    "status": "observed",
+                    "evidence_refs": _status_evidence_refs(status),
+                }
+            )
+        result = str(status.get("result", "not_observed"))
+        if result in {"completed", "blocked", "failed"}:
+            observations.append(
+                {
+                    "event": "result",
+                    "status": result,
+                    "evidence_refs": _status_evidence_refs(status),
+                }
+            )
+        if status.get("verification") == "observed":
+            observations.append(
+                {
+                    "event": "verification",
+                    "status": "observed",
+                    "evidence_refs": _status_evidence_refs(status),
+                }
+            )
+        return tuple(observations)
+
+
+def maestro_for_executor_session(paths: OmhPaths, session: dict[str, Any]) -> Maestro:
+    """Bind an external wrapper session to symmetric Maestro read adapters."""
+
+    profile = str(session.get("selected_executor_profile", ""))
+    if profile == "hermes":
+        raise HermesNativeSelectionError(
+            "Hermes-native selection bypasses maestro; use the Hermes runtime path."
+        )
+    if profile not in CODING_EXECUTOR_TARGETS or profile == "choose":
+        raise ExecutorSessionError(f"unsupported Maestro executor session profile: {profile}")
+    return Maestro(
+        status_adapter=_ExecutorSessionStatusAdapter(paths, session),
+        observation_adapter=_ExecutorSessionObservationAdapter(paths, session),
+    )
+
+
+def _require_matching_maestro_handoff(
+    session: dict[str, Any],
+    handoff: PreparedExternalHandoff,
+) -> None:
+    profile = str(session.get("selected_executor_profile", ""))
+    if handoff.capability.profile != profile:
+        raise ExecutorSessionError(
+            f"Maestro handoff profile {handoff.capability.profile} does not match wrapper session {profile}"
+        )
+
+
+def _status_evidence_refs(status: Mapping[str, object]) -> list[str]:
+    record = status.get("record")
+    if not isinstance(record, dict):
+        return []
+    refs = record.get("evidence_refs", [])
+    return [str(item) for item in refs] if isinstance(refs, list) else []
 
 
 def build_executor_session_status(

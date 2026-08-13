@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Model routing setup - Hermes native and Maestro external owners</title>
+    <meta name="description" content="How OMH sets up model routing: editable per-category recommendation chains, flexible behavior when a model is missing, the Hermes-native path, the external Maestro coordinator, and family notes for Qwen, Gemini, Grok, and Kimi.">
+    <meta name="theme-color" content="#04070c">
+    <meta property="og:title" content="OMH model routing setup">
+    <meta property="og:description" content="Editable categories, flexible missing-model behavior, Hermes-native versus external Maestro coordination.">
+    <link rel="canonical" href="https://rlaope.github.io/oh-my-hermes/docs/model-routing/">
+    <link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="../../styles.css">
+  </head>
+  <body class="docs-page">
+    <a class="skip-link" href="#content">Skip to content</a>
+    <header class="topbar topbar--solid" aria-label="Primary">
+      <a class="brand brand--link" href="../../"><span class="brand-mark" aria-hidden="true">O</span>Oh My Hermes</a>
+      <nav class="nav" aria-label="Primary navigation">
+        <a href="../../">Product</a>
+        <a href="../">Docs</a>
+        <a aria-current="page" href="./">Model routing</a>
+        <a class="nav__icon" href="https://github.com/rlaope/oh-my-hermes" aria-label="Open OMH on GitHub" title="GitHub repository">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.22c0 4.52 2.87 8.35 6.85 9.7.5.09.68-.22.68-.49v-1.73c-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.9 1.56 2.35 1.11 2.92.85.09-.66.35-1.11.63-1.37-2.22-.26-4.55-1.14-4.55-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.31.1-2.71 0 0 .84-.28 2.75 1.05A9.37 9.37 0 0 1 12 6.92c.85 0 1.7.12 2.5.35 1.9-1.33 2.74-1.05 2.74-1.05.55 1.4.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.93-2.34 4.79-4.57 5.05.36.32.68.94.68 1.9v2.8c0 .27.18.58.69.48A10.06 10.06 0 0 0 22 12.22C22 6.58 17.52 2 12 2Z"></path></svg>
+        </a>
+      </nav>
+    </header>
+
+    <main class="docs-shell" id="content" tabindex="-1">
+      <aside class="docs-toc docs-toc--desktop" aria-label="Model routing sections">
+        <a href="#start">Start</a>
+        <a href="#setup">Setup</a>
+        <a href="#categories">Editable categories</a>
+        <a href="#missing">Missing models</a>
+        <a href="#owners">Hermes and Maestro</a>
+        <a href="#families">Model families</a>
+        <a href="#domain">Domain notes</a>
+        <a href="#commands">Agent reference</a>
+        <a href="#boundary">Claim boundary</a>
+      </aside>
+
+      <article class="docs-content">
+        <header class="docs-hero docs-hero--clean" id="start">
+          <p class="eyebrow">Model routing</p>
+          <h1>Name the model per kind of work, not per request.</h1>
+          <p>
+            OMH routing is a metadata layer. It records which model a prepared
+            unit of work should name, using an editable recommendation order per
+            work category, resolved against the models you confirm are active on
+            this machine. OMH never invokes a model, never retries one, and
+            never switches models at runtime.
+          </p>
+        </header>
+
+        <nav class="docs-toc docs-toc--mobile" aria-label="Model routing sections">
+          <a href="#start">Start</a>
+          <a href="#setup">Setup</a>
+          <a href="#categories">Editable categories</a>
+          <a href="#missing">Missing models</a>
+          <a href="#owners">Hermes and Maestro</a>
+          <a href="#families">Model families</a>
+          <a href="#domain">Domain notes</a>
+          <a href="#commands">Agent reference</a>
+          <a href="#boundary">Claim boundary</a>
+        </nav>
+
+        <nav class="docs-start-grid" aria-label="Model routing paths">
+          <a class="docs-start-card" href="#setup"><span>Set up</span><strong>Run the setup once</strong><em>Routing uses confirmed-active input; local command-name presence stays metadata only.</em></a>
+          <a class="docs-start-card" href="#categories"><span>Edit</span><strong>Reorder a category</strong><em>Replace a shipped chain with your own ordered candidates.</em></a>
+          <a class="docs-start-card" href="#missing"><span>Skip</span><strong>Miss a model safely</strong><em>An unavailable candidate is skipped; nothing blocks the install.</em></a>
+          <a class="docs-start-card" href="#owners"><span>Own</span><strong>Choose the owner</strong><em>Hermes-native stays in Hermes; external work goes through Maestro.</em></a>
+        </nav>
+
+        <section class="docs-section docs-two-column" id="setup">
+          <div>
+            <p class="eyebrow">Setup</p>
+            <h2>Setup records metadata. It does not prove reachability.</h2>
+            <p>
+              Routing resolves against models a caller confirms are active. The
+              local inventory is metadata-only and reporting-only: it checks
+              whether known agent CLI command names are present on
+              <code>PATH</code>. That observation means only that a command name
+              was found; it does not prove the CLI works, a model is runnable,
+              a provider is available, authentication succeeds, or an account
+              has access or entitlement.
+            </p>
+            <p>
+              Nothing here reads credentials, calls a provider, or measures a
+              model. Provider configuration stays with Hermes; OMH only records
+              what a caller states is available.
+            </p>
+          </div>
+          <div class="docs-note">
+            <strong>Human default</strong>
+            <p><code>omh setup</code>, then <code>omh doctor</code>. That is the whole human path.</p>
+            <strong>Agent and operator control plane</strong>
+            <p>
+              <code>omh coding model-routing status</code> and
+              <code>omh coding model-inventory</code> are called by Hermes
+              Agent, wrappers, coding agents, and maintainers &mdash; not memorized
+              by normal users.
+            </p>
+          </div>
+        </section>
+
+        <section class="docs-section" id="categories">
+          <p class="eyebrow">Editable categories</p>
+          <h2>Eight categories, each an ordered chain you can replace.</h2>
+          <p>
+            A category names the kind of work, never a vendor. Each category
+            holds an ordered list of candidate models. OMH ships an editorial
+            order; a <code>model_recommendation_overrides/v1</code> document
+            replaces the chains it names and leaves the rest untouched.
+          </p>
+          <div class="reference-grid">
+            <a class="reference-link" href="#missing"><span>ultrabrain</span><h3>Deepest reasoning</h3><p>Reserved for work that declares it needs that depth.</p></a>
+            <a class="reference-link" href="#missing"><span>deep</span><h3>Strong default tier</h3><p>The composer's default rather than the deepest one.</p></a>
+            <a class="reference-link" href="#missing"><span>unspecified-high</span><h3>Default working model</h3><p>Standard implementation heads here.</p></a>
+            <a class="reference-link" href="#missing"><span>unspecified-low</span><h3>Cheaper fallback</h3><p>Closes a chain with a different model, not a weaker effort.</p></a>
+            <a class="reference-link" href="#missing"><span>quick</span><h3>Short tasks</h3><p>Ships with no editorial default; add your own.</p></a>
+            <a class="reference-link" href="#missing"><span>writing</span><h3>Prose and docs</h3><p>Ships with no editorial default; add your own.</p></a>
+            <a class="reference-link" href="#missing"><span>visual-engineering</span><h3>Frontend and visual</h3><p>Editorial visual-work order, still fully replaceable.</p></a>
+            <a class="reference-link" href="#missing"><span>artistry</span><h3>Unconventional work</h3><p>Ships with no editorial default; add your own.</p></a>
+          </div>
+          <p>
+            Categories where the shipped profile defines no recommendation stay
+            explicit empty chains rather than gaining invented defaults. An
+            override cannot add a category, invent a role slot, or carry
+            provider configuration, and secret-looking fields are rejected.
+          </p>
+          <div class="command" role="region" aria-label="Model recommendation override example" tabindex="0"><code>{
+  "schema_version": "model_recommendation_overrides/v1",
+  "categories": {
+    "quick": [
+      {
+        "model_alias": "your-fast-model",
+        "model_family": "qwen",
+        "preferred_provider_families": ["openrouter"],
+        "reasoning": "Local preference for short tasks."
+      }
+    ]
+  }
+}</code></div>
+        </section>
+
+        <section class="docs-section docs-two-column" id="missing">
+          <div>
+            <p class="eyebrow">Missing models</p>
+            <h2>A model you do not have is skipped, not fatal.</h2>
+            <p>
+              You are not expected to hold every model. Resolution walks the
+              chain, skips candidates that are not confirmed active, and selects
+              the next eligible one. When no candidate in a chain is eligible,
+              the result is <code>unconfigured</code> &mdash; recorded plainly,
+              without blocking the surrounding installation.
+            </p>
+            <p>
+              An explicitly requested model behaves differently on purpose: it
+              is fail-closed. If the model you named is not available, the
+              result is <code>choice_required</code> and OMH never silently
+              falls through to an editorial candidate in its place.
+            </p>
+          </div>
+          <div class="feature-contract">
+            <div class="handoff-flow" aria-label="Model resolution states">
+              <div><span>resolved</span><strong>a confirmed model was selected</strong></div>
+              <div><span>choice_required</span><strong>your explicit model is unavailable</strong></div>
+              <div><span>unconfigured</span><strong>no eligible candidate; install continues</strong></div>
+            </div>
+            <p class="boundary-note">Your explicit model choice always wins. Recommendation order never overrides it.</p>
+          </div>
+        </section>
+
+        <section class="docs-section" id="owners">
+          <p class="eyebrow">Owners</p>
+          <h2>Hermes-native stays in Hermes. External work goes through Maestro.</h2>
+          <p>
+            Routing projects a resolution for one of two owners. The split is a
+            real boundary in the code, not a label: a Hermes-native selection
+            reaching the external coordinator is rejected rather than quietly
+            coordinated.
+          </p>
+          <div class="docs-two-column">
+            <div class="docs-note">
+              <strong>Hermes native</strong>
+              <p>
+                Hermes keeps the work. The Hermes setup slot is the
+                <code>main</code> role, and alias configuration is delegated to
+                Hermes' own <code>config</code> and <code>auth</code> commands.
+                OMH does not read Hermes' dotenv file and performs no network
+                I/O for it.
+              </p>
+            </div>
+            <div class="docs-note">
+              <strong>External Maestro</strong>
+              <p>
+                Maestro is OMH's internal coordinator for prepared external
+                handoffs across the <code>codex</code>, <code>claude-code</code>,
+                the runtime profiles, and <code>generic</code> owners. It
+                prepares and reports; it is never a coding executor. This name is
+                unrelated to the awesome-catalog project also called Maestro.
+              </p>
+            </div>
+          </div>
+          <p class="boundary-note">A prepared handoff is not execution, review, CI, merge-readiness, or merge evidence.</p>
+        </section>
+
+        <section class="docs-section" id="families">
+          <p class="eyebrow">Model families</p>
+          <h2>Families are named so chains stay vendor-plural.</h2>
+          <p>
+            A candidate names a model family and its preferred provider
+            families. Provider preference is metadata: actual availability
+            remains caller-supplied truth. Families OMH recognizes in routing
+            and prompt composition include the ones below, alongside the
+            Claude and GPT families.
+          </p>
+          <div class="reference-grid">
+            <a class="reference-link" href="#domain"><span>qwen</span><h3>Qwen</h3><p>Recognized family and command-name presence metadata; no shipped editorial default.</p></a>
+            <a class="reference-link" href="#domain"><span>gemini</span><h3>Gemini</h3><p>Recognized family, command-name presence metadata, and a listed X-platform synthesis alternative.</p></a>
+            <a class="reference-link" href="#domain"><span>grok</span><h3>Grok</h3><p>Recognized family and command-name presence metadata, with an X-platform domain note.</p></a>
+            <a class="reference-link" href="#domain"><span>kimi</span><h3>Kimi</h3><p>Recognized family and an editorial general-work candidate.</p></a>
+          </div>
+          <p>
+            Each family composes work differently, so OMH keeps per-family
+            prompt-composition guidance instead of assuming one house style.
+            A wrapper command name found on <code>PATH</code> is presence
+            metadata only. It does not establish that the wrapper or model can
+            run, that its provider is available or authenticated, or that the
+            account has access or entitlement.
+          </p>
+        </section>
+
+        <section class="docs-section docs-two-column" id="domain">
+          <div>
+            <p class="eyebrow">Domain notes</p>
+            <h2>X/Grok is an affinity note, never a veto.</h2>
+            <p>
+              A unit of work can declare a domain. Declaring
+              <code>x_platform_data</code> notes the Grok family, whose home
+              platform is X, and multimodal vision notes the Gemini, GPT, and
+              Claude families. When a unit declares a domain, the note may
+              advisorily reorder a locally-derived chain, and the reorder is
+              recorded in the route's attempted trail.
+            </p>
+          </div>
+          <div class="feature-contract">
+            <p class="boundary-note">
+              Domain affinity notes are static editorial defaults &mdash; not
+              observed, benchmarked, or measured capability. OMH never evaluates
+              a model. They never rank by quality, never remove an option, and
+              never override your explicit model choice.
+            </p>
+          </div>
+        </section>
+
+        <section class="docs-section docs-two-column" id="commands">
+          <div>
+            <p class="eyebrow">Agent and operator reference</p>
+            <h2>Ask Hermes. These commands sit behind it.</h2>
+            <p>
+              In normal use you describe the work to Hermes and it prepares the
+              route. The commands are listed for wrappers, coding agents,
+              automations, and maintainers who need the machine payload.
+            </p>
+          </div>
+          <div class="command" role="region" aria-label="Model routing commands" tabindex="0"><code>omh coding model-route --explain
+omh coding model-route --executor codex --role implementation
+omh coding model-route --domain x_platform_data --json
+omh coding model-route --recommendations ./my-routing.json
+
+omh coding model-routing status
+omh coding model-inventory
+omh coding composition-guide --model kimi-k3</code></div>
+        </section>
+
+        <section class="docs-section" id="boundary">
+          <p class="eyebrow">Claim boundary</p>
+          <h2>What routing is, and what it is not.</h2>
+          <div class="reference-grid">
+            <a class="reference-link" href="../executor-handoff/"><span>Is</span><h3>Prepared metadata</h3><p>A deterministic record of which model a unit should name.</p></a>
+            <a class="reference-link" href="../"><span>Is not</span><h3>Invocation</h3><p>OMH never calls a model, retries one, or swaps it mid-run.</p></a>
+            <a class="reference-link" href="../"><span>Is not</span><h3>A benchmark</h3><p>Shipped order is editorial. No ranking, score, or measurement is claimed.</p></a>
+          </div>
+          <p class="claim-boundary">
+            Recommendation order is editorial and user-replaceable. It is not a
+            benchmark, a quality ranking, or a measured capability claim, and a
+            prepared route is not execution evidence.
+          </p>
+        </section>
+      </article>
+    </main>
+
+    <footer class="footer"><span>Model routing prepares metadata; the selected owner produces the evidence.</span><span><a href="../">Back to docs</a></span></footer>
+  </body>
+</html>

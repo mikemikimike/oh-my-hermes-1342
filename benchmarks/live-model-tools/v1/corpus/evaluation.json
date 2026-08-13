@@ -1,0 +1,7 @@
+{
+  "schema_version": "omh_live_model_tool_generator_plan/v1",
+  "split": "evaluation",
+  "seeds": [104729, 130363, 155921],
+  "templates": ["E-RENAME", "E-BUGFIX", "E-PRECEDENCE", "E-CALLFLOW", "E-REFERENCES", "E-PREDICATE", "E-DEFINITION", "E-DIAGNOSTICS", "E-SCALE", "E-EXPLICIT"],
+  "statistics_eligible": true
+}

@@ -1234,7 +1234,6 @@ class RouterContentTests(unittest.TestCase):
 
     def test_hermes_setup_skills_share_five_step_contract_and_skip_semantics(self) -> None:
         hermes_setup_skill_names = (
-            "model-setup",
             "parallel-tools",
             "websearch-setup",
             "morning-brief",
@@ -1274,9 +1273,8 @@ class RouterContentTests(unittest.TestCase):
                 for fragment in additional_fragments.get(name, ()):
                     self.assertIn(fragment, content, f"{name}: missing required fragment {fragment!r}")
 
-    def test_hermes_setup_skills_avoid_stale_vendor_and_pricing_literals(self) -> None:
+    def test_provider_neutral_hermes_setup_skills_avoid_stale_vendor_and_pricing_literals(self) -> None:
         hermes_setup_skill_names = (
-            "model-setup",
             "parallel-tools",
             "websearch-setup",
             "morning-brief",
@@ -3806,6 +3804,14 @@ class RouterContentTests(unittest.TestCase):
         # so natural, non-mechanical per-language translation is allowed.
         readme_section_translations = (
             ("## Quick Start", {"ko": "## 빠른 시작", "ja": "## クイックスタート", "zh": "## 快速开始"}),
+            (
+                "## Recommended models",
+                {
+                    "ko": "## 권장 모델",
+                    "ja": "## 推奨モデル",
+                    "zh": "## 推荐模型",
+                },
+            ),
             (
                 "## Ultra-Skills",
                 {"ko": "## 울트라 스킬", "ja": "## ウルトラスキル", "zh": "## Ultra 技能"},

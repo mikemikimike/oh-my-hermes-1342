@@ -47,7 +47,6 @@
 
 <p align="center">
   <strong>한 번 설치하세요. Hermes는 그대로 두고, 더 강한 운영층을 더하세요.</strong>
-  <br>
   <em>계획, 조사, 제작, 코딩 handoff, 운영, 프로젝트 기억을 명확한 증거 경계와 함께 제공합니다.</em>
 </p>
 
@@ -84,7 +83,6 @@
 > <p align="center">
 >   <img src="assets/friren-agent-omh-callout.png" alt="Friren Agent explaining OMH in Art&Engine" width="720">
 > </p>
-
 ## 빠른 시작
 
 **로컬 명령과 관리형 skill을 설치합니다:**
@@ -101,8 +99,6 @@ irm https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.ps1 | iex
 omh setup
 ```
 
-<br>
-
 **Hermes skill tap 경로:**
 
 ```sh
@@ -116,8 +112,6 @@ hermes skills install rlaope/oh-my-hermes/skills/omh-routing --yes
 Hey Agent, Install this >> https://github.com/rlaope/oh-my-hermes <<
 ```
 
-<br>
-
 **업데이트와 상태 점검:**
 
 ```sh
@@ -129,7 +123,22 @@ omh doctor
 [Installation](docs/INSTALLATION.md#reconciling-an-existing-full-install-back-to-core)에
 있습니다.
 
-<br>
+## 권장 모델
+
+OMH에는 다음과 같이 편집 가능한 카테고리별 권장 모델이 포함되어 있습니다.
+
+| 카테고리 | 권장 모델 |
+| --- | --- |
+| `ultrabrain` | GPT-5.6 Sol |
+| `deep` | GPT-5.6 Terra |
+| `unspecified-high` | Kimi K3, 다음 Claude Opus 5 |
+| `unspecified-low` | GLM 5.2, 다음 GLM 5.2 Ultrafast |
+| `visual-engineering` | Claude Fable 5, 다음 Kimi K3 |
+
+Hermes에게 **모델을 설정해 줘**라고 요청해 검토하거나 변경할 수 있습니다.
+이는 편집 가능한 선호이며 benchmark 결과가 아닙니다. 자세한 설정, fallback,
+provider, 소유권 규칙은
+[Guided Model Setup](docs/INSTALLATION.md#guided-model-setup)을 참조하세요.
 
 ## 울트라 스킬
 
@@ -154,9 +163,6 @@ omh doctor
 | ⚡ `ulw-process` | 작업 하나를 리서치부터 PR까지 끝까지 끌고 갑니다. |
 | ⚡ `ulw-qa` | 일부러 험한 시나리오로 공격해 보고, 깨지는 곳을 고칩니다. |
 | ⚡ `ulw-perf` | 어디가 진짜 느리고 비싼지 측정한 뒤, 핫패스를 하나씩 고칩니다. |
-
-<br>
-
 ## OMH가 더하는 것
 
 OMH는 **105개**의 설치형 workflow skill을 사람이 이해하기 쉬운 6개 기능군으로
@@ -189,7 +195,6 @@ OMH는 **105개**의 설치형 workflow skill을 사람이 이해하기 쉬운 6
 | 🎨 **완성도 높은 산출물 제작** | `omh-design-quality-gate` · `omh-materials-package` · `omh-deliverable-package` · `omh-image-cards` | 콘텐츠, 완성도, 접근성, 렌더링 품질 게이트를 기준으로 웹사이트, 시각 자료, 보고서, 발표 자료, 문서, PDF, 포스터, 패키지를 만듭니다. |
 | 🧠 **기억과 운영** | `omh-memory-new` · `omh-memory-sync` · `omh-ops-observability-card` · `omh-doctor` | 프로젝트 기억을 검토 우선으로 유지하고, 운영 준비 상태를 보여주며, provider나 시스템 상태를 지어내지 않고 다음 복구 행동을 제시합니다. |
 | 🔌 **경계를 숨기지 않는 연결** | `omh-toolbelt-readiness` · `omh-external-connector-readiness` · `omh-agent-board` | 작업이 의존하기 전에 필요한 도구·connector·agent 표면이 실제로 준비됐는지 확인하고, host 로드·도구 사용·외부 provider 접근을 각각 별도로 관측할 수 있게 유지합니다. |
-
 ## 실제 업무를 위한 설계
 
 <p align="center">
@@ -235,7 +240,6 @@ OMH는 그 작업을 둘러싼 로컬 계약, 라우팅, 기억, 품질 게이�
 **🧱 local-first 제어면.** OMH의 핵심 라우팅, catalog, manifest, 주장
 규칙은 결정적인 로컬 표면입니다. 외부 호출과 provider 접근은 코어 내부에
 숨겨진 동작이 아니라 명시적인 통합으로 남습니다.
-
 ## 주장보다 증거
 
 OMH는 직접 본 것만 일어났다고 말합니다. 화면에 뜨는 상태는 항상 두 부분입니다:
@@ -250,7 +254,6 @@ OMH는 직접 본 것만 일어났다고 말합니다. 화면에 뜨는 상태�
 
 중요한 건 아래에서 두 번째 줄입니다. executor가 끝났다고 말한 것과 결과가
 확인된 것은 다른데, 대부분의 도구가 둘 다 "완료"라고 씁니다.
-
 ## 문서
 
 - [문서 지도](docs/README.md)
@@ -262,7 +265,6 @@ OMH는 직접 본 것만 일어났다고 말합니다. 화면에 뜨는 상태�
 - [역할](docs/ROLES.md)
 - [활용 사례](docs/APPLICATION_CASES.md)
 - [릴리스와 개발](docs/RELEASE.md)
-
 ## 개발
 
 ```sh

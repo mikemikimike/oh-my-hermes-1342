@@ -129,11 +129,17 @@ class CalibrationSelectionTests(unittest.TestCase):
         self.assertEqual(calibration_for_route(route), HIGH_EFFORT_CALIBRATIONS["generic"])
 
     def test_each_declared_family_gets_its_own_block(self) -> None:
-        # gemini/grok/kimi/glm ride opencode-surfaced routes; each family's
+        # gemini/grok/kimi/glm/qwen/deepseek ride provider-surfaced routes; each family's
         # counter-text is distinct data, selected by the recorded model_family.
-        for family in ("gpt", "claude", "gemini", "grok", "kimi", "glm"):
+        for family in ("gpt", "claude", "gemini", "grok", "kimi", "glm", "qwen", "deepseek"):
             route = {"selected_reasoning_effort": "high", "model_family": family}
             self.assertEqual(calibration_for_route(route), HIGH_EFFORT_CALIBRATIONS[family], family)
+
+    def test_target_family_calibrations_preserve_documented_agent_behavior(self) -> None:
+        self.assertIn("non-thinking", HIGH_EFFORT_CALIBRATIONS["qwen"])
+        self.assertNotIn("<think>", HIGH_EFFORT_CALIBRATIONS["qwen"])
+        self.assertIn("model version", HIGH_EFFORT_CALIBRATIONS["deepseek"])
+        self.assertIn("interleaved", HIGH_EFFORT_CALIBRATIONS["glm"])
 
     def test_no_route_means_no_calibration(self) -> None:
         self.assertEqual(calibration_for_route(None), "")
@@ -159,7 +165,7 @@ class CompositionCalibrationTests(unittest.TestCase):
 
     def test_selection_follows_the_composers_own_model(self) -> None:
         # The user's own examples: fable5 -> claude family, sol -> gpt,
-        # gemini -> gemini, kimi -> kimi; provider prefixes welcome.
+        # gemini -> gemini, kimi -> kimi, qwen -> qwen; provider prefixes welcome.
         cases = {
             "claude-fable-5": "claude",
             "gpt-5.6-sol": "gpt",
@@ -167,6 +173,7 @@ class CompositionCalibrationTests(unittest.TestCase):
             "kimi-k3": "kimi",
             "opencode/glm-5": "glm",
             "grok-code-fast-1": "grok",
+            "qwen-max-2024-11-26": "qwen",
         }
         for model_id, family in cases.items():
             self.assertEqual(

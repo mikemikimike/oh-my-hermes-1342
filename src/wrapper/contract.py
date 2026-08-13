@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 from functools import lru_cache
 import hashlib
 import re
@@ -12,6 +13,12 @@ from ..coding.action_gate import LADDER_ACTION_IDS
 from ..coding.agentic_playbook import maybe_build_agentic_playbook
 from ..coding.agentic_playbook_contract import chat_response_with_agentic_playbook
 from ..coding.executor_local_workflow import validate_executor_local_workflow
+from ..coding.model_discovery import discover_local_models
+from ..coding.model_routing import resolve_model_route
+from ..coding.routing_observation import (
+    render_routing_code_block_text,
+    validate_routing_observation,
+)
 from ..coding.status_board import model_label_for
 from ..evidence import status_label
 from .message_gate import build_message_gate, fence_marker_for, message_gate_body
@@ -21,6 +28,11 @@ from ..routing.catalog_questions import is_skill_catalog_question as _is_skill_c
 from ..routing.chat import public_chat_route_payload, route_explanation_payload
 from ..routing.coding_route_actions import coding_route_decision_payload, resolve_coding_route_decision
 from ..routing.localization import normalized_phrase
+from ..routing.owner_preference import (
+    read_owner_preference,
+    record_accepted_explicit_choice,
+    write_owner_preference,
+)
 from ..routing.missed_route import is_missed_route_feedback
 from ..routing.omh_help import (
     is_omh_intro_question as _is_omh_intro_question,
@@ -115,6 +127,7 @@ VISIBLE_ACTIONS = (
     "prepare_handoff",
     "prepare_project_terms_context",
     "choose_executor",
+    "reset_coding_owner_preference",
     "show_prompt_handoff",
     "copy_prompt_handoff",
     "show_runtime_handoff",
@@ -3315,6 +3328,7 @@ def build_chat_interaction_payload(
     paths: OmhPaths | None = None,
     skill_policy: dict[str, object] | None = None,
     platform_context: Mapping[str, Any] | None = None,
+    routing_observation: Mapping[str, object] | None = None,
     _host_project_binding_factory: HostProjectBindingFactory | None = None,
 ) -> dict[str, object]:
     if source not in CHAT_SOURCES:
@@ -3343,6 +3357,7 @@ def build_chat_interaction_payload(
         paths=paths,
         skill_policy=skill_policy,
         platform_context=platform_context,
+        routing_observation=routing_observation,
         host_project_binding_factory=_host_project_binding_factory,
     ):
         return _copy_chat_interaction_payload(
@@ -3372,6 +3387,8 @@ def build_chat_interaction_payload(
         platform_envelope=platform_envelope,
         host_project_binding_factory=_host_project_binding_factory,
     )
+    if paths is not None:
+        _record_accepted_owner_choice(payload, paths)
     # Attached at the one point every chat surface passes through -- the plugin
     # tool's session and no-session paths both land here -- so Slack, Telegram,
     # Discord, CLI, and desktop all carry the notice from a single seam. The
@@ -3379,7 +3396,36 @@ def build_chat_interaction_payload(
     # without an OMH home there is no brief to read.
     if paths is not None:
         payload = _with_memory_consolidation_notice(payload, paths, message)
+    if routing_observation is not None:
+        payload = enhance_chat_interaction_with_routing_observation(payload, routing_observation)
     return payload
+
+
+def _record_accepted_owner_choice(payload: Mapping[str, object], paths: OmhPaths) -> None:
+    """Persist a safe explicit picker acceptance after routing has completed."""
+    resolution = payload.get("executor_resolution")
+    decision = payload.get("coding_route_decision")
+    delegation = payload.get("delegation")
+    if (
+        not isinstance(resolution, Mapping)
+        or resolution.get("source") != "explicit"
+        or not isinstance(decision, Mapping)
+        or decision.get("source") != "request_named_executor"
+        or decision.get("owner_preference_reason_code") != "owner_named_in_request"
+        or not isinstance(delegation, Mapping)
+    ):
+        return
+    selected_owner = str(delegation.get("selected_executor_profile", "") or "")
+    route_family = str(decision.get("owner_preference_route_family", "") or "")
+    if not selected_owner or selected_owner != resolution.get("resolved_executor_target") or not route_family:
+        return
+    updated = record_accepted_explicit_choice(
+        read_owner_preference(paths),
+        route_family=route_family,
+        selected_owner=selected_owner,
+        occurred_at=datetime.now(timezone.utc).isoformat(),
+    )
+    write_owner_preference(paths, updated)
 
 
 def _can_use_chat_interaction_cache(
@@ -3392,6 +3438,7 @@ def _can_use_chat_interaction_cache(
     paths: OmhPaths | None,
     skill_policy: dict[str, object] | None,
     platform_context: Mapping[str, Any] | None,
+    routing_observation: Mapping[str, object] | None,
     host_project_binding_factory: HostProjectBindingFactory | None,
 ) -> bool:
     return (
@@ -3403,6 +3450,7 @@ def _can_use_chat_interaction_cache(
         and paths is None
         and skill_policy is None
         and platform_context is None
+        and routing_observation is None
         and host_project_binding_factory is None
     )
 
@@ -4028,11 +4076,15 @@ def _build_chat_interaction_payload_uncached(
             if paths
             else None,
             capability_snapshot_directory=(paths.omh_home / "coding" / "executor-capability-snapshots") if paths else None,
+            model_recommendation=_resolved_hermes_model_recommendation(
+                resolved_executor_target,
+                paths,
+            ),
         )
         if paths:
             record_attached_recall_usage(paths, delegation)
         delegation["executor_resolution"] = executor_resolution
-        coding_route_decision = _coding_route_decision_for_delegation(message, executor_resolution)
+        coding_route_decision = _coding_route_decision_for_delegation(message, executor_resolution, paths)
         delegation["coding_route_decision"] = coding_route_decision
         _attach_executor_choice_context(delegation, paths)
         base["delegation"] = delegation
@@ -4155,8 +4207,16 @@ def _resolve_delegate_executor_target(executor_target: str, paths: OmhPaths | No
         resolved = setup_default
         source = "setup_profile"
     else:
-        resolved = "choose"
-        source = "caller_default"
+        learned = resolve_coding_route_decision(
+            normalized_phrase(message),
+            owner_preference_state=read_owner_preference(paths) if paths else None,
+        )
+        if learned.source == "learned_owner_preference":
+            resolved = learned.selected_owner
+            source = "learned_owner_preference"
+        else:
+            resolved = "choose"
+            source = "caller_default"
 
     return resolved, {
         "schema_version": "executor_resolution/v1",
@@ -4213,6 +4273,10 @@ def _attach_coding_owner_handoff(
         if paths
         else None,
         capability_snapshot_directory=(paths.omh_home / "coding" / "executor-capability-snapshots") if paths else None,
+        model_recommendation=_resolved_hermes_model_recommendation(
+            resolved_executor_target,
+            paths,
+        ),
     )
     if paths:
         record_attached_recall_usage(paths, delegation)
@@ -4224,7 +4288,7 @@ def _attach_coding_owner_handoff(
         "coding_status_request": _route_is_coding_status_request(route_payload),
         "claim_boundary": "Route context explains why the wrapper shaped this handoff; it is not dispatch or runtime evidence.",
     }
-    coding_route_decision = _coding_route_decision_for_delegation(message, executor_resolution)
+    coding_route_decision = _coding_route_decision_for_delegation(message, executor_resolution, paths)
     delegation["coding_route_decision"] = coding_route_decision
     _attach_executor_choice_context(delegation, paths)
     agentic_playbook = delegation.get("agentic_playbook")
@@ -4236,6 +4300,35 @@ def _attach_coding_owner_handoff(
     base["next_action"] = _delegation_next_action(delegation)
     base["chat_response"] = build_chat_response_from_delegation(delegation, thread_key=str(base["thread_key"]))
     return base
+
+
+def _resolved_hermes_model_recommendation(
+    executor_target: str,
+    paths: OmhPaths | None,
+) -> dict[str, object] | None:
+    if executor_target != "hermes" or paths is None:
+        return None
+    discovery = discover_local_models(paths.hermes_home.parent)
+    observations = discovery.get("observations", [])
+    active_models = [
+        {
+            **observation,
+            "model_alias": str(observation.get("model_id", "")).rsplit("/", 1)[-1],
+            "provider_family": str(observation.get("provider", "")),
+            "compatible_owners": ["hermes"],
+        }
+        for observation in observations
+        if isinstance(observation, dict)
+        and observation.get("status") == "confirmed_active"
+        and observation.get("model_id")
+    ] if isinstance(observations, list) else []
+    route = resolve_model_route(
+        "hermes",
+        role="implementation",
+        active_models=active_models,
+    )
+    recommendation = route.get("recommendation")
+    return dict(recommendation) if isinstance(recommendation, dict) else None
 
 
 def _attach_executor_choice_context(delegation: dict[str, object], paths: OmhPaths | None) -> None:
@@ -4265,6 +4358,7 @@ def _attach_executor_choice_context(delegation: dict[str, object], paths: OmhPat
 def _coding_route_decision_for_delegation(
     message: str,
     executor_resolution: dict[str, object],
+    paths: OmhPaths | None = None,
 ) -> dict[str, object]:
     """Return the same four-state coding-owner decision the plugin route hints report.
 
@@ -4277,8 +4371,41 @@ def _coding_route_decision_for_delegation(
             normalized_phrase(message),
             requested_owner=str(executor_resolution.get("requested_executor_target", "") or ""),
             recorded_owner=str(executor_resolution.get("default_executor", "") or ""),
+            owner_preference_state=read_owner_preference(paths) if paths else None,
         )
     )
+
+
+def _owner_preference_state(delegation: Mapping[str, object]) -> dict[str, object]:
+    decision = _nested(delegation, "coding_route_decision")
+    return {
+        key: value
+        for key, value in decision.items()
+        if key.startswith("owner_preference_")
+    }
+
+
+def _append_owner_preference_actions(
+    actions: list[dict[str, object]],
+    delegation: Mapping[str, object],
+    *,
+    before_last: bool = False,
+) -> None:
+    decision = _nested(delegation, "coding_route_decision")
+    if not decision.get("owner_preference_override_available"):
+        actions.append(_action("choose_executor", "Change coding agent", "secondary"))
+        return
+    owner_actions = [
+        _action("choose_executor", "Override learned coding agent", "secondary"),
+        _action(
+            "reset_coding_owner_preference",
+            "Reset learned coding agent",
+            "secondary",
+            payload={"route_family": decision.get("owner_preference_route_family", "")},
+        ),
+    ]
+    insertion = max(0, len(actions) - 1) if before_last else len(actions)
+    actions[insertion:insertion] = owner_actions
 
 
 def _delegation_next_action(delegation: dict[str, object]) -> str:
@@ -5978,6 +6105,7 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
                     },
                 )
             )
+        _append_owner_preference_actions(actions, delegation_payload)
         actions.append(_action("show_status", "Show status", "secondary"))
         next_action = "show_coding_handoff_status" if status_request else "send_to_executor"
         actions, next_action = _apply_action_gate_arbitration(actions, next_action, gate)
@@ -6015,6 +6143,7 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
                 "coding_status_request": status_request,
                 "route_context": delegation_payload.get("route_context", {}),
                 **_executor_local_workflow_state(handoff, executor),
+                **_owner_preference_state(delegation_payload),
                 **gate_state,
             },
         )
@@ -6043,7 +6172,7 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
                 _action("copy_prompt_handoff", f"Copy {label} prompt", "secondary", payload={"selected_executor_profile": selected}),
             ]
         )
-        actions.append(_action("choose_executor", "Change coding agent", "secondary"))
+        _append_owner_preference_actions(actions, delegation_payload)
         if status_request:
             actions.append(
                 _action(
@@ -6094,6 +6223,7 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
                 "coding_status_request": status_request,
                 "route_context": delegation_payload.get("route_context", {}),
                 **_executor_local_workflow_state(prompt_handoff, selected),
+                **_owner_preference_state(delegation_payload),
                 **gate_state,
             },
         )
@@ -6131,9 +6261,9 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
             _action("prepare_worktree", "Prepare worktree", "secondary", enabled=False, payload={"selected_executor_profile": selected}),
             _action("start_team", "Start team", "secondary", enabled=False, payload={"selected_executor_profile": selected}),
             _action("start_swarm", "Start swarm", "secondary", enabled=False, payload={"selected_executor_profile": selected}),
-            _action("choose_executor", "Change coding agent", "secondary"),
             _action("show_status", "Show status", "secondary"),
         ]
+        _append_owner_preference_actions(runtime_actions, delegation_payload, before_last=True)
         runtime_next_action = "show_coding_handoff_status" if status_request else "show_runtime_handoff"
         runtime_actions, runtime_next_action = _apply_action_gate_arbitration(runtime_actions, runtime_next_action, gate)
         return _chat_response(
@@ -6170,6 +6300,7 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
                 "executor_resolution": executor_resolution,
                 "coding_status_request": status_request,
                 **_executor_local_workflow_state(runtime_handoff, selected),
+                **_owner_preference_state(delegation_payload),
                 **gate_state,
             },
         )
@@ -6189,6 +6320,10 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
                 "work: Claude Code, Codex, an oh-my runtime path, or split it across several agents "
                 "in parallel. Main coding stays delegated."
             )
+        owner_preference_state = _owner_preference_state(delegation_payload)
+        reset_reason = str(owner_preference_state.get("owner_preference_reset_reason", ""))
+        if reset_reason:
+            body = f"{body} The learned coding-agent streak was reset: {reset_reason}."
         choice_actions, choice_next_action = _apply_action_gate_arbitration(
             [
                 _action("choose_executor", "Choose coding agent", "primary"),
@@ -6220,6 +6355,7 @@ def build_chat_response_from_delegation(delegation_payload: dict[str, object], *
                 "executor_readiness": delegation_payload.get("executor_readiness", {}),
                 "executor_choice_context": delegation_payload.get("executor_choice_context", {}),
                 "executor_resolution": executor_resolution,
+                **owner_preference_state,
                 **policy_state,
                 **gate_state,
             },
@@ -7131,6 +7267,41 @@ def _with_memory_consolidation_notice(
         platform_envelope=_nested(payload, "platform") or None,
     )
     return payload
+
+
+def enhance_chat_interaction_with_routing_observation(
+    payload: dict[str, object],
+    routing_observation: Mapping[str, object],
+) -> dict[str, object]:
+    """Add one canonical routing payload and its fenced user projection.
+
+    Discord, Slack, hosted wrappers, and Desktop all receive the same unfenced
+    bytes from ``routing_observation``; this adapter adds fences only at the
+    message boundary and then reuses the existing platform renderer.
+    """
+    observation = dict(routing_observation)
+    errors = validate_routing_observation(observation)
+    if errors:
+        raise ValueError("invalid chat routing observation: " + "; ".join(errors))
+    updated = dict(payload)
+    updated["routing_observation"] = observation
+    response = updated.get("chat_response")
+    if not isinstance(response, dict):
+        return updated
+    response = dict(response)
+    body = str(response.get("body", "") or "").rstrip()
+    code_text = render_routing_code_block_text(observation)
+    fenced = f"```text\n{code_text}\n```"
+    response["body"] = f"{body}\n\n{fenced}" if body else fenced
+    response["routing_observation"] = observation
+    response["routing_code_block_text"] = code_text
+    updated["chat_response"] = _chat_response_with_render_profile(
+        response,
+        source=str(updated.get("source", "generic")),
+        source_metadata=_nested(updated, "source_metadata"),
+        platform_envelope=_nested(updated, "platform") or None,
+    )
+    return updated
 
 
 def _finish_interaction(payload: dict[str, object], target_notice: dict[str, object] | None) -> dict[str, object]:

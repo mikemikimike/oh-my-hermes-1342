@@ -342,10 +342,134 @@ def build_coding_delegation_payload(
     safety_preflight: dict[str, object] | None = None,
     live_safety_profile_revision: str | None = None,
     requested_authority_actions: tuple[str, ...] | list[str] | None = None,
+    model_recommendation: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Prepare coding work through Maestro for external owners and natively for Hermes."""
+
+    if executor_target in {
+        "codex",
+        "claude-code",
+        "omx-runtime",
+        "omo-runtime",
+        "omc-runtime",
+        "generic",
+    }:
+        # Lazy import keeps the facade free to call the native builder below
+        # without a module-import cycle. Importing the module (rather than a
+        # copied function binding) also leaves one observable production seam.
+        from .maestro import facade as maestro_facade
+        from .maestro.contracts import ExternalHandoffRequest
+
+        request = ExternalHandoffRequest(
+                message=message,
+                profile=executor_target,
+                source=source,
+                limit=limit,
+                include_message=include_message,
+                source_metadata=source_metadata,
+                main_agent_model=main_agent_model,
+                context_pack=context_pack,
+                input_manifest=input_manifest,
+                memory_recall_pack=memory_recall_pack,
+                plan_artifact=plan_artifact,
+                preferred_workflow=preferred_workflow,
+                preferred_workflow_score=preferred_workflow_score,
+                prefer_direct_coding_handoff=prefer_direct_coding_handoff,
+                preserve_preferred_workflow=preserve_preferred_workflow,
+                force_coding_handoff=force_coding_handoff,
+                capability_snapshot_directory=capability_snapshot_directory,
+                project_root=project_root,
+                governance_default=governance_default,
+                product_family=product_family,
+                message_context_mode=message_context_mode,
+                safety_preflight=safety_preflight,
+                live_safety_profile_revision=live_safety_profile_revision,
+                requested_authority_actions=requested_authority_actions,
+                model_recommendation=model_recommendation,
+            )
+        try:
+            return maestro_facade.build_external_handoff(request).payload
+        except maestro_facade.HermesNativeSelectionError as exc:
+            # Maestro may discover that the native gate retained Hermes (for
+            # example after a denial). Reuse that already-built payload so the
+            # single authority decision is never evaluated a second time.
+            if exc.payload is not None:
+                return exc.payload
+            # A direct Hermes selection reaching this external-only facade has
+            # no payload and falls through to the native path below.
+    return _build_coding_delegation_payload_native(
+        message,
+        source=source,
+        limit=limit,
+        include_message=include_message,
+        source_metadata=source_metadata,
+        main_agent_model=main_agent_model,
+        executor_target=executor_target,
+        context_pack=context_pack,
+        input_manifest=input_manifest,
+        memory_recall_pack=memory_recall_pack,
+        plan_artifact=plan_artifact,
+        preferred_workflow=preferred_workflow,
+        preferred_workflow_score=preferred_workflow_score,
+        prefer_direct_coding_handoff=prefer_direct_coding_handoff,
+        preserve_preferred_workflow=preserve_preferred_workflow,
+        force_coding_handoff=force_coding_handoff,
+        capability_snapshot_directory=capability_snapshot_directory,
+        project_root=project_root,
+        governance_default=governance_default,
+        product_family=product_family,
+        message_context_mode=message_context_mode,
+        safety_preflight=safety_preflight,
+        live_safety_profile_revision=live_safety_profile_revision,
+        requested_authority_actions=requested_authority_actions,
+        model_recommendation=model_recommendation,
+    )
+
+
+def _build_coding_delegation_payload_native(
+    message: str,
+    *,
+    source: str = "generic",
+    limit: int = 3,
+    include_message: bool = False,
+    source_metadata: dict[str, str] | None = None,
+    main_agent_model: str = "",
+    executor_target: str = "generic",
+    context_pack: dict[str, object] | None = None,
+    input_manifest: dict[str, object] | None = None,
+    memory_recall_pack: dict[str, object] | None = None,
+    plan_artifact: dict[str, object] | None = None,
+    preferred_workflow: str | None = None,
+    preferred_workflow_score: int | None = None,
+    prefer_direct_coding_handoff: bool = True,
+    preserve_preferred_workflow: bool = False,
+    force_coding_handoff: bool = False,
+    capability_snapshot_directory: Path | None = None,
+    project_root: str | Path | None = None,
+    governance_default: str = "not_applicable",
+    product_family: str | None = None,
+    message_context_mode: str = "full",
+    safety_preflight: dict[str, object] | None = None,
+    live_safety_profile_revision: str | None = None,
+    requested_authority_actions: tuple[str, ...] | list[str] | None = None,
+    model_recommendation: dict[str, object] | None = None,
 ) -> dict[str, object]:
     message = message.strip()
     if not message:
         raise ValueError("coding delegate requires a task description")
+    from .model_routing import canonical_model_category, category_from_text
+
+    model_route_category = category_from_text(message)
+    if model_recommendation is not None:
+        selector = model_recommendation.get("selector")
+        recommendation_category = (
+            canonical_model_category(selector.get("name"))
+            if isinstance(selector, dict) and selector.get("surface") == "categories"
+            else ""
+        )
+        if model_route_category and recommendation_category and model_route_category != recommendation_category:
+            raise ValueError("natural ULW category conflicts with model recommendation selector")
+        model_route_category = model_route_category or recommendation_category
     if message_context_mode not in MESSAGE_CONTEXT_MODES:
         raise ValueError(f"unsupported coding delegate message context mode: {message_context_mode}")
     if source not in CHAT_SOURCES:
@@ -594,6 +718,10 @@ def build_coding_delegation_payload(
             capability_snapshot=capability_snapshot,
             executor_local_workflow=executor_local_workflow,
         )
+        if selection.selected_executor_profile == "hermes" and model_recommendation is not None:
+            payload["runtime_handoff"]["hermes_native_model_binding"] = _hermes_native_model_binding(
+                model_recommendation
+            )
         _attach_context_pack(payload["runtime_handoff"], context_pack)
         _attach_input_manifest(payload["runtime_handoff"], resolved_input_manifest)
         _attach_memory_recall_pack(payload["runtime_handoff"], memory_recall_pack)
@@ -618,6 +746,11 @@ def build_coding_delegation_payload(
         _attach_context_pack(payload["prompt_handoff"], context_pack)
         _attach_input_manifest(payload["prompt_handoff"], resolved_input_manifest)
         _attach_memory_recall_pack(payload["prompt_handoff"], memory_recall_pack)
+    _attach_model_routing_metadata(
+        payload,
+        category=model_route_category,
+        recommendation=model_recommendation,
+    )
     specialist_work_quality = build_specialist_work_quality_contract(
         delegation.recommended_workflow,
         phase="implementation" if delegation.action == "delegate" else "planning",
@@ -649,6 +782,91 @@ def build_coding_delegation_payload(
     if agentic_playbook:
         payload["agentic_playbook"] = agentic_playbook
     return payload
+
+
+def _attach_model_routing_metadata(
+    payload: dict[str, object],
+    *,
+    category: str,
+    recommendation: dict[str, object] | None,
+) -> None:
+    handoff = next(
+        (
+            value
+            for key in ("executor_handoff", "runtime_handoff", "prompt_handoff")
+            if isinstance((value := payload.get(key)), dict)
+        ),
+        None,
+    )
+    if category:
+        payload["model_route_category"] = category
+        if handoff is not None:
+            handoff["model_route_category"] = category
+    if recommendation is None or recommendation.get("owner") != "maestro" or handoff is None:
+        return
+    projection = recommendation.get("projection")
+    if recommendation.get("status") != "resolved" or not isinstance(projection, dict):
+        return
+    if projection.get("kind") != "maestro_ordered_chain" or not isinstance(projection.get("chain"), list):
+        raise ValueError("Maestro recommendation must contain an ordered-chain projection")
+    handoff["maestro_model_projection"] = {
+        "schema_version": "maestro_model_handoff_projection/v1",
+        "status": "prepared_not_observed",
+        "kind": "maestro_ordered_chain",
+        "chain": [dict(item) for item in projection["chain"] if isinstance(item, dict)],
+        "claim_boundary": (
+            "This ordered chain is prepared routing metadata, not model availability, dispatch, or execution evidence."
+        ),
+    }
+
+
+def _hermes_native_model_binding(recommendation: dict[str, object]) -> dict[str, object]:
+    if recommendation.get("owner") != "hermes":
+        raise ValueError("Hermes native model binding requires a Hermes recommendation")
+    status = str(recommendation.get("status", ""))
+    projection = recommendation.get("projection")
+    selected = recommendation.get("selected")
+    if status != "resolved" or not isinstance(projection, dict) or not isinstance(selected, dict):
+        inactive = recommendation.get("inactive_candidates", [])
+        return {
+            "schema_version": "hermes_native_model_handoff_binding/v1",
+            "status": "choice_required",
+            "next_action": "configure_hermes_native_alias",
+            "inactive_candidates": [str(item) for item in inactive] if isinstance(inactive, list) else [],
+            "claim_boundary": (
+                "No Hermes alias or per-task model pin is prepared until a native binding is resolved."
+            ),
+        }
+    if projection.get("kind") != "hermes_native_binding":
+        raise ValueError("Hermes recommendation must contain a native binding projection")
+    alias = str(projection.get("alias", "")).strip()
+    provider = str(projection.get("provider", "")).strip()
+    model_id = str(projection.get("model_id", "")).strip()
+    binding = str(projection.get("binding", "")).strip()
+    if not alias or not provider or not model_id or binding != f"{provider}/{model_id}":
+        raise ValueError("Hermes native binding projection is incomplete")
+    return {
+        "schema_version": "hermes_native_model_handoff_binding/v1",
+        "status": "prepared_not_observed",
+        "alias": alias,
+        "provider": provider,
+        "model_id": model_id,
+        "binding": binding,
+        "provenance": str(selected.get("recommendation_source", recommendation.get("source", ""))),
+        "kanban_task_override": {
+            "command": f"set-model {binding}",
+            "model": binding,
+            "status": "prepared_not_observed",
+        },
+        "delegate_task_override": {
+            "model": binding,
+            "status": "prepared_not_observed",
+        },
+        "claim_boundary": (
+            "This is Hermes-native alias, Kanban, and delegate_task metadata. It is not an alias write, "
+            "task pin, dispatch, or execution claim until matching Hermes runtime observation is recorded."
+        ),
+    }
 
 
 _VISIBLE_PROMPT_KEYS = (

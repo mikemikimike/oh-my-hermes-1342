@@ -129,10 +129,11 @@ OMH is not:
 - a Hermes core patch
 - a Discord or Slack bot implementation
 - an LLM router or network service
-- a hidden coding runtime (the fanout dispatch bridge is the explicit,
-  observed, opt-in exception: an operator command that spawns local agent
-  CLIs against a frozen fanout contract and records everything as observed
-  evidence — the opposite of hidden)
+- a hidden coding runtime (the explicit, observed, opt-in exceptions are the
+  fanout dispatch bridge and the Hermes-native child boundary: operator or
+  maintainer commands that spawn local agent CLIs only after confirmation,
+  isolate the process, and record authenticated observed evidence — the
+  opposite of hidden)
 - a claim that Hermes executed work that only a handoff prepared
 
 ## Routing Language Policy

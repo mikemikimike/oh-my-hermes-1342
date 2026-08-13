@@ -22,6 +22,13 @@ from ..version import __version__
 from ..command_path import COMMAND_PATH_MISSING_NEXT_ACTION, inspect_omh_command_path
 from ..capabilities.registry import capability_summary
 from ..capabilities.skills import skill_capabilities
+from ..coding.hermes_model_config import (
+    apply_hermes_model_config,
+    inspect_hermes_model_config,
+    preview_hermes_model_config,
+)
+from ..coding.model_discovery import discover_local_models
+from ..coding.model_recommendations import resolve_model_recommendation
 from ..config_adapter import (
     ensure_external_dir,
     ensure_plugin_enabled,
@@ -76,6 +83,15 @@ from ..team_profiles import (
 )
 from .common import _action_label, _paths, _print_json, _wants_json
 from .language import LANGUAGE_CODES, language_from_env, normalize_language, tr
+from .model_setup_flow import (
+    ModelSetupFlowDependencies,
+    model_activation_result,
+)
+from .model_setup_inputs import validate_model_setup_args
+from .model_setup_rendering import (
+    print_model_activation_summary,
+    print_model_preview_review,
+)
 
 POSIX_INSTALLER_COMMAND = "curl -fsSL https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.sh | sh"
 WINDOWS_INSTALLER_COMMAND = "irm https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/install.ps1 | iex"
@@ -1198,6 +1214,7 @@ def _doctor_result(args: argparse.Namespace) -> dict[str, object]:
 
 def cmd_setup(args: argparse.Namespace) -> int:
     args.with_plugin = True
+    validate_model_setup_args(args)
     language = _setup_language(args)
     paths = _paths(args)
     if _setup_should_interact(args):
@@ -1306,6 +1323,20 @@ def cmd_setup(args: argparse.Namespace) -> int:
         )
     else:
         progress.done(tr(language, "target_recorded"))
+    if getattr(args, "model_setup", False):
+        dependencies = _model_setup_flow_dependencies()
+        steps["model_activation"] = model_activation_result(
+            args,
+            language=language,
+            dependencies=dependencies,
+        )
+        if not _wants_json(args):
+            print_model_activation_summary(
+                steps["model_activation"],
+                language=language,
+                use_color=_use_color,
+                color=_color,
+            )
     if args.dry_run:
         bootstrap_final_state = (
             "dry run would install generated skills and register the managed OMH skills directory for Hermes discovery"
@@ -1402,9 +1433,33 @@ def _setup_should_interact(args: argparse.Namespace) -> bool:
         or getattr(args, "no_menubar", False)
         or args.skip_apply
         or getattr(args, "scope", None)
+        or getattr(args, "model_setup", False)
     ):
         return False
     return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _print_model_preview_review(payload: dict[str, object], *, language: str) -> None:
+    print_model_preview_review(
+        payload,
+        language=language,
+        use_color=_use_color,
+        color=_color,
+    )
+
+
+def _model_setup_flow_dependencies() -> ModelSetupFlowDependencies:
+    return ModelSetupFlowDependencies(
+        discover_local_models=discover_local_models,
+        inspect_hermes_model_config=inspect_hermes_model_config,
+        preview_hermes_model_config=preview_hermes_model_config,
+        apply_hermes_model_config=apply_hermes_model_config,
+        resolve_model_recommendation=resolve_model_recommendation,
+        ask_yes_no=_ask_yes_no,
+        ask=_ask,
+        use_color=_use_color,
+        print_model_preview_review=_print_model_preview_review,
+    )
 
 
 def _setup_should_attempt_menubar(args: argparse.Namespace) -> bool:
@@ -3065,6 +3120,45 @@ def _add_top_level_commands(sub) -> None:
     setup.add_argument("--interactive", action="store_true", help="Force the interactive setup wizard.")
     setup.add_argument("--no-interactive", action="store_true", help="Disable the interactive setup wizard.")
     setup.add_argument("--skip-apply", action="store_true", help="Install skills without registering them in Hermes config.")
+    setup.add_argument(
+        "--model-setup",
+        action="store_true",
+        help="Inspect local model metadata and guide explicit Hermes model-alias activation.",
+    )
+    setup.add_argument(
+        "--import-omo-category-overrides",
+        action="store_true",
+        help="Import category model preferences from canonical ~/.omo/omo.json[c].",
+    )
+    setup.add_argument(
+        "--confirm-model",
+        action="append",
+        default=[],
+        metavar="PROVIDER/MODEL",
+        help="Confirm one locally available model as active. Repeat for multiple models.",
+    )
+    setup.add_argument(
+        "--model-alias",
+        action="append",
+        default=[],
+        metavar="ALIAS=MODEL",
+        help="Preview one editable Hermes model alias. Repeat for multiple aliases.",
+    )
+    setup.add_argument(
+        "--apply-model-config",
+        action="store_true",
+        help="Apply the model-alias preview after explicit confirmation and digest binding.",
+    )
+    setup.add_argument(
+        "--model-config-digest",
+        default="",
+        help="Expected Hermes config digest printed by the model-alias preview.",
+    )
+    setup.add_argument(
+        "--allow-model-alias-collision",
+        action="store_true",
+        help="Explicitly allow replacing an existing Hermes model alias in the preview.",
+    )
     setup.add_argument("--star", action="store_true", help="Star the oh-my-hermes GitHub repo via gh after setup (opt-in; never prompted).")
     setup.add_argument(
         "--profile",

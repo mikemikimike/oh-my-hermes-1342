@@ -4,6 +4,12 @@ from typing import Any
 
 from ..adapter_quality import quality_session_control
 from ..conformance.checker import check_runtime_run
+from ..coding.routing_observation import (
+    authenticate_executor_observation,
+    build_routing_observation,
+    routing_surface_projection,
+    validate_routing_observation,
+)
 from ..paths import OmhPaths
 from .sessions import build_wrapper_session_status, read_wrapper_session
 
@@ -12,7 +18,12 @@ MISSION_CONTROL_SCHEMA_VERSION = "mission_control/v1"
 _SOURCE_BINDING_NOT_RECORDED = "not_recorded"
 
 
-def build_mission_control(paths: OmhPaths, session_id: str) -> dict[str, object]:
+def build_mission_control(
+    paths: OmhPaths,
+    session_id: str,
+    *,
+    routing_observation: dict[str, object] | None = None,
+) -> dict[str, object]:
     "Build an executor-neutral, read-only task journey from existing local records."
     try:
         session_status = build_wrapper_session_status(paths, session_id)
@@ -20,7 +31,11 @@ def build_mission_control(paths: OmhPaths, session_id: str) -> dict[str, object]
         session = read_wrapper_session(paths, session_id)
         if session is None:
             raise
-        return _dangling_run_projection(session_id, session)
+        return _dangling_run_projection(
+            session_id,
+            session,
+            routing_observation=routing_observation,
+        )
     run_id = str(session_status.get("current_run_id", ""))
     runtime_status = _mapping(session_status.get("runtime_status"))
     runtime_observation = _mapping(session_status.get("runtime_observation"))
@@ -35,6 +50,18 @@ def build_mission_control(paths: OmhPaths, session_id: str) -> dict[str, object]
         "source_binding": source_binding,
     }
     next_action = str(conformance["next_action"])
+    observation = routing_observation or _routing_observation(
+        session_id=session_id,
+        run_id=run_id,
+        session_status=session_status,
+        runtime_status=runtime_status,
+        runtime_observation=runtime_observation,
+        next_action=next_action,
+    )
+    errors = validate_routing_observation(observation)
+    if errors:
+        raise ValueError("invalid Mission Control routing observation: " + "; ".join(errors))
+    routing_projection = routing_surface_projection(observation)
     return {
         "schema_version": MISSION_CONTROL_SCHEMA_VERSION,
         "session_id": session_id,
@@ -49,11 +76,53 @@ def build_mission_control(paths: OmhPaths, session_id: str) -> dict[str, object]
         "merge_decision": _merge_decision(quality_evidence, next_action),
         "next_action": next_action,
         "safe_summary": str(conformance["safe_summary"]),
+        "routing_observation": observation,
+        "routing_status_rows": routing_projection["cli_status_rows"],
+        "desktop_routing_code_block_text": routing_projection["desktop_code_block_text"],
         "claim_boundary": (
             "Mission Control is a read-only local projection. Prepared handoffs, wrapper state, "
             "and unbound evidence do not prove execution, review, CI, merge readiness, or merge."
         ),
     }
+
+
+def _routing_observation(
+    *,
+    session_id: str,
+    run_id: str,
+    session_status: dict[str, object],
+    runtime_status: dict[str, Any],
+    runtime_observation: dict[str, Any],
+    next_action: str,
+) -> dict[str, object]:
+    prepared = _mapping(runtime_status.get("prepared"))
+    route = _mapping(prepared.get("model_route"))
+    executor_status = _mapping(session_status.get("executor_session_status"))
+    executor_progress = _mapping(executor_status.get("executor_progress"))
+    latest_event = _mapping(executor_progress.get("latest_event"))
+    result = str(executor_status.get("result", ""))
+    observed = {
+        **runtime_observation,
+        **executor_progress,
+        **latest_event,
+        "status": (result if result in {"completed", "blocked", "failed"} else None)
+        or latest_event.get("status")
+        or runtime_observation.get("status")
+        or ("running" if executor_status.get("dispatch") == "observed" else None),
+        "owner": executor_status.get("selected_executor_profile")
+        or session_status.get("selected_executor_profile"),
+        **(
+            {"current_action": next_action}
+            if latest_event or runtime_observation.get("status") or executor_status.get("dispatch") == "observed"
+            else {}
+        ),
+    }
+    return build_routing_observation(
+        route=route,
+        session_observation=authenticate_executor_observation(observed),
+        child_session_id=session_id,
+        run_id=run_id,
+    )
 
 
 def _prepared_conformance(session_status: dict[str, object], runtime_observation: dict[str, Any]) -> dict[str, object]:
@@ -187,8 +256,22 @@ def _capability_observation(session_status: dict[str, object]) -> dict[str, obje
     return {"status": status, "snapshot": snapshot}
 
 
-def _dangling_run_projection(session_id: str, session: dict[str, Any]) -> dict[str, object]:
+def _dangling_run_projection(
+    session_id: str,
+    session: dict[str, Any],
+    *,
+    routing_observation: dict[str, object] | None = None,
+) -> dict[str, object]:
     executor = str(session.get("selected_executor_profile") or "choose")
+    observation = routing_observation or build_routing_observation(
+        route={"executor_profile": executor},
+        child_session_id=session_id,
+        run_id=str(session.get("current_run_id", "")),
+    )
+    errors = validate_routing_observation(observation)
+    if errors:
+        raise ValueError("invalid Mission Control routing observation: " + "; ".join(errors))
+    routing_projection = routing_surface_projection(observation)
     return {
         "schema_version": MISSION_CONTROL_SCHEMA_VERSION,
         "session_id": session_id,
@@ -211,6 +294,9 @@ def _dangling_run_projection(session_id: str, session: dict[str, Any]) -> dict[s
         },
         "next_action": "repair_linked_runtime_record",
         "safe_summary": "The wrapper session exists, but its linked runtime record is missing.",
+        "routing_observation": observation,
+        "routing_status_rows": routing_projection["cli_status_rows"],
+        "desktop_routing_code_block_text": routing_projection["desktop_code_block_text"],
         "claim_boundary": "Missing runtime records do not prove execution, review, CI, merge readiness, or merge.",
     }
 

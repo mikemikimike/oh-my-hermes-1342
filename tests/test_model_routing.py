@@ -21,6 +21,7 @@ from omh.coding.model_routing import (  # noqa: E402
     MODEL_ROLES,
     MODEL_ROUTE_PROVENANCES,
     MODEL_ROUTE_STATUSES,
+    REASONING_EFFORT_LADDER,
     ROLE_MODEL_CHAINS,
     model_family,
     model_route_for_unit,
@@ -120,6 +121,9 @@ class FamilyPrefixParityTests(unittest.TestCase):
         self.assertEqual(model_family("opencode/kimi-k3"), "kimi")
         self.assertEqual(model_family("anthropic/claude-opus-5"), "claude")
         self.assertEqual(model_family("openai/gpt-5.6-sol"), "gpt")
+        self.assertEqual(model_family("qwen/qwen3-coder-next"), "qwen")
+        self.assertEqual(model_family("deepseek/deepseek-v4-pro"), "deepseek")
+        self.assertEqual(model_family("zai/glm-5"), "glm")
         self.assertEqual(model_family("opencode/big-pickle"), "unknown")
 
 
@@ -424,6 +428,33 @@ class RouteVocabularyPolicyTests(unittest.TestCase):
 
 
 class EffortLadderTests(unittest.TestCase):
+    def test_canonical_ladder_is_weakest_to_strongest(self) -> None:
+        self.assertEqual(
+            REASONING_EFFORT_LADDER,
+            ("off", "minimal", "low", "medium", "high", "xhigh", "max"),
+        )
+
+    def test_legacy_none_normalizes_to_off_and_keeps_requested_provenance(self) -> None:
+        route = resolve_model_route("codex", requested_model="gpt-6-terra", requested_effort="none")
+        self.assertEqual(route["selected_reasoning_effort"], "off")
+        self.assertEqual(route["effort_change"]["requested"], "none")
+        self.assertEqual(route["effort_change"]["selected"], "off")
+        self.assertEqual(route["effort_change"]["kind"], "legacy_alias_normalized")
+
+    def test_auto_passes_through_when_catalog_has_no_contract_for_it(self) -> None:
+        route = resolve_model_route("codex", requested_model="gpt-5-codex", requested_effort="auto")
+        self.assertEqual(route["selected_reasoning_effort"], "auto")
+        self.assertEqual(route["effort_change"]["kind"], "automatic_passthrough")
+
+    def test_legacy_none_normalizes_on_catalogless_hermes_projection(self) -> None:
+        route = resolve_model_route(
+            "hermes",
+            role="implementation",
+            requested_effort="none",
+            active_models=("kimi-k3",),
+        )
+        self.assertEqual(route["selected_reasoning_effort"], "off")
+
     # The four-quadrant grid: (ladder-vocab?, exact-model authority?).
     def test_quadrant_ladder_vocab_exact_model_downgrades(self) -> None:
         # THE second behavior change of this PR (the live-bug fix): `max` on a
@@ -497,6 +528,28 @@ class EffortLadderTests(unittest.TestCase):
             # high and medium are unsupported; low is the next supported rung
             # DOWN the ladder from high.
             self.assertEqual(route["selected_reasoning_effort"], "low")
+
+    def test_canonical_lower_rungs_clamp_across_holes(self) -> None:
+        synthetic = {
+            "codex": (
+                {
+                    "model_id": "synthetic-model",
+                    "label": "synthetic",
+                    "tier": "frontier",
+                    "recommended_roles": ("brain",),
+                    "reasoning_efforts": ("off", "low", "high"),
+                },
+            ),
+        }
+        with mock.patch.dict(EXECUTOR_MODEL_OPTIONS, synthetic, clear=True):
+            medium = resolve_model_route(
+                "codex", requested_model="synthetic-model", requested_effort="medium"
+            )
+            minimal = resolve_model_route(
+                "codex", requested_model="synthetic-model", requested_effort="minimal"
+            )
+        self.assertEqual(medium["selected_reasoning_effort"], "low")
+        self.assertEqual(minimal["selected_reasoning_effort"], "off")
 
     def test_ladder_with_no_supported_rung_terminates_empty(self) -> None:
         from unittest import mock

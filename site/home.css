@@ -1361,7 +1361,168 @@
   line-height: 1.6;
 }
 
+/* --------------------------------------------------------------- routing */
+
+.route-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.route-card {
+  display: flex;
+  flex-direction: column;
+  padding: 26px 22px 24px;
+}
+
+.route-card__tag {
+  margin: 0 0 12px;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* Latin tracking on Hangul/Kana/Han opens gaps between syllables and reads as
+   broken spacing. Those scripts have no case, so uppercasing is a no-op too. */
+:lang(ko) .route-card__tag,
+:lang(ja) .route-card__tag,
+:lang(zh) .route-card__tag {
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.route-card h3 {
+  margin-bottom: 12px;
+}
+
+.route-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.route-chips li {
+  padding: 5px 11px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 999px;
+  background: rgba(76, 194, 255, 0.07);
+  color: var(--accent-strong);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.route-chips--family li {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--ink);
+}
+
+.route-states {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0 0;
+}
+
+.route-state {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--glass-edge);
+  border-left-width: 3px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.route-state dt {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--quiet);
+  overflow-wrap: anywhere;
+}
+
+.route-state dd {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.route-state--ok {
+  border-left-color: rgba(96, 230, 160, 0.5);
+}
+
+.route-state--ok dt {
+  color: #7ce8b0;
+}
+
+.route-state--warn {
+  border-left-color: rgba(245, 183, 107, 0.5);
+}
+
+.route-state--warn dt {
+  color: var(--warning);
+}
+
+.route-owners {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.route-owner {
+  padding: 8px 14px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.route-owner--hermes {
+  border-color: rgba(76, 194, 255, 0.34);
+  background: rgba(76, 194, 255, 0.11);
+  color: var(--accent-strong);
+}
+
+.route-cta {
+  margin-top: 22px;
+}
+
 /* --------------------------------------------------------------- install */
+
+.install-followup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+  margin: 22px 0 0;
+  color: var(--quiet);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.install-followup a {
+  color: var(--accent-strong);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(138, 217, 255, 0.4);
+  transition: border-color var(--transition), color var(--transition);
+}
+
+.install-followup a:hover,
+.install-followup a:focus-visible {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
 
 .install-steps {
   display: grid;
@@ -1618,6 +1779,7 @@
   .section--tight { padding: 52px 0; }
   .section__head { margin-bottom: 38px; }
 
+  .route-grid,
   .surface-grid,
   .install-steps,
   .mem-rules__list,

@@ -1,0 +1,7 @@
+{
+  "schema_version": "omh_live_model_tool_generator_plan/v1",
+  "split": "development",
+  "seeds": [7919],
+  "templates": ["D-RENAME", "D-BUGFIX", "D-PRECEDENCE", "D-CALLFLOW", "D-REFERENCES", "D-PREDICATE", "D-DEFINITION", "D-DIAGNOSTICS", "D-SCALE", "D-EXPLICIT"],
+  "statistics_eligible": false
+}

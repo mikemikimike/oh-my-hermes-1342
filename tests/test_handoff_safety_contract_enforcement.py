@@ -122,7 +122,7 @@ def _imported_modules(tree: ast.Module) -> list[tuple[str, tuple[str, ...], int]
 # --------------------------------------------------------------------------
 
 # Verified against the tree, not copied from the issue: an AST sweep for
-# `subprocess` imports at any scope returns exactly these eleven modules. Each
+# `subprocess` imports at any scope returns exactly these modules. Each
 # is reachable only from an explicit operator command; none sits on the chat or
 # handoff-preparation path.
 PROCESS_SPAWN_ALLOWLIST: dict[str, str] = {
@@ -136,6 +136,19 @@ PROCESS_SPAWN_ALLOWLIST: dict[str, str] = {
     "src/coding/executor_readiness.py": (
         "probes `<executor> --version` on PATH to report which agent CLIs are installed; "
         "reads a version line, dispatches no work."
+    ),
+    "src/coding/hermes_model_config.py": (
+        "operator-invoked `omh setup --model-setup` and `omh coding model-routing status`; "
+        "runs bounded local `hermes config` / `hermes auth` inspection and approved alias "
+        "mutation, never a model or coding executor."
+    ),
+    "src/coding/hermes_child_dispatch.py": (
+        "operator-only, explicitly confirmed `ask_before_dispatch` seam for one bounded local "
+        "`hermes --oneshot --model` child; suppresses recursion and cleans its process group."
+    ),
+    "src/coding/_hermes_child_process.py": (
+        "private lifecycle helper for the explicitly confirmed Hermes child seam; relays signals, "
+        "escalates SIGTERM to SIGKILL, and verifies that the child process group is absent."
     ),
     "src/commands/coding.py": (
         "`git rev-parse <base-ref>` inside the operator-invoked `coding fanout dispatch` command, "

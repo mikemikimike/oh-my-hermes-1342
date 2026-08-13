@@ -741,6 +741,64 @@ unknown owner, and journals `coding_owner_retarget/v1` as a
 is `prepared_not_observed`: it is not dispatch evidence and not proof the new
 owner accepted or started the work.
 
+## Model Routing Ownership
+
+Model setup and routing preserve two ownership lanes rather than hiding every
+model behind one abstraction.
+
+**Hermes-native lane.** `coding/hermes_model_config.py` inspects aliases and
+provider-presence metadata through local Hermes commands, creates an exact
+`model.aliases` preview, and applies only a user-approved, config-digest-bound
+change. A post-write native inspection verifies the result. Existing aliases
+are user-owned and collisions fail closed. Hermes skills, Kanban,
+`delegate_task`, provider bindings, and execution stay native; no Maestro object
+appears in this lane.
+
+**External Maestro lane.** `coding/maestro/` is a typed facade over the existing
+Codex, Claude Code, OMO, OMC, OMX, and generic prepared-handoff builders and
+status/observation adapters. It rejects Hermes profiles. Maestro is a
+coordinator, not an executor: `executes_work` is false, prepared payload schema
+and dispatchability are preserved, and only the selected external owner or
+wrapper can record runtime observation. Maestro never writes Hermes aliases or
+owns provider credentials.
+
+`pi` and `senpi` are OMO runtime-family host CLIs. Their allowlisted session
+metadata can contribute discovery observations, but they are not independent
+executor/model owners and do not authorize promotion into the Hermes-native
+lane.
+
+`coding/model_discovery.py` is the bounded metadata ingress. Fixed roots,
+record-count/size/depth/time limits, field allowlists, and explicit
+`observed_before`, `confirmed_active`, `unobserved`, `truncated`, or
+`layout_unverified` states prevent history from becoming availability truth.
+Auth files and record bodies are not emitted. Only the OMO-owned model file
+layout yields `confirmed_active` discovery records; guided setup otherwise
+requires explicit user confirmation. Discovery remains advisory and performs
+no network request.
+
+`coding/model_recommendations.py` owns secret-free editorial candidate order.
+The categories reuse the closed `MODEL_CATEGORIES` vocabulary; `main` is a
+separate Hermes role suggestion and `x_platform_data` is a separate domain
+affinity. User override documents can replace only those named chains and
+cannot extend the vocabularies or contain secret/provider configuration.
+Resolution filters order against caller-confirmed active models. A missing head
+falls through to the next eligible candidate; no eligible candidate returns
+`unconfigured` without blocking setup. An unavailable explicit model instead
+returns `choice_required` and freezes fallthrough.
+
+The shipped Kimi, Claude, GPT, GLM, Grok, and Gemini order is editorial, not
+benchmarked. Qwen is a valid confirmed user alternative through an override or
+explicit selection. Grok's lead position for `x_platform_data` is static X
+platform affinity, not measured capability. CCAPI and Apitopia names are only
+preferred provider-family metadata and require user-declared local activation;
+there is no readiness probe or credential transfer.
+
+`model_routing_status/v1` joins discovery, Hermes aliases, Maestro category
+resolution, and owner-learning metadata for agents and maintainers. These
+remain four separately labeled inputs. The status and doctor advisory do not
+upgrade any of them into provider entitlement, dispatch, execution, review,
+CI, or merge evidence.
+
 ## Hermes Capability Boundary
 
 `omh probe` is the non-mutating capability inspection surface. It reports

@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from ..coding.model_routing import MODEL_CATEGORIES
+
+
+def recommendation_projections(
+    *,
+    active_models: list[dict[str, str]],
+    catalog: dict[str, object],
+    main: dict[str, object],
+    resolve_model_recommendation: Callable,
+    omo_overrides: dict[str, object] | None,
+    omo_override_source: str,
+) -> dict[str, object]:
+    return {
+        "main": main,
+        "hermes_native": {
+            "owner": "hermes",
+            "main": main,
+            "categories": _category_recommendations(
+                owner="hermes",
+                active_models=active_models,
+                catalog=catalog,
+                resolve_model_recommendation=resolve_model_recommendation,
+            ),
+        },
+        "maestro": {
+            "owner": "maestro",
+            "categories": _category_recommendations(
+                owner="maestro",
+                active_models=active_models,
+                catalog=catalog,
+                resolve_model_recommendation=resolve_model_recommendation,
+            ),
+        },
+        "omo_category_overrides": {
+            "status": "imported" if omo_overrides else "not_imported",
+            "source": omo_override_source,
+            "categories": sorted((omo_overrides or {}).get("categories", {})),
+        },
+    }
+
+
+def provider_next_actions(confirmed: set[str], inspection) -> list[dict[str, str]]:
+    presence = {provider.provider_id: provider for provider in inspection.providers}
+    actions: list[dict[str, str]] = []
+    for provider_id in sorted(
+        reference.partition("/")[0] for reference in confirmed if "/" in reference
+    ):
+        provider = presence.get(provider_id)
+        if provider is None or not provider.auth_present:
+            actions.append(
+                {
+                    "provider": provider_id,
+                    "status": "auth_missing",
+                    "next_action": f"hermes auth login {provider_id}",
+                }
+            )
+        elif not provider.auth_status_ok:
+            actions.append(
+                {
+                    "provider": provider_id,
+                    "status": "auth_check_failed",
+                    "next_action": f"hermes auth status {provider_id}",
+                }
+            )
+        else:
+            actions.append(
+                {
+                    "provider": provider_id,
+                    "status": "ready",
+                    "next_action": "",
+                }
+            )
+    return actions
+
+
+def _category_recommendations(
+    *,
+    owner: str,
+    active_models: list[dict[str, str]],
+    catalog: dict[str, object],
+    resolve_model_recommendation: Callable,
+) -> dict[str, object]:
+    return {
+        category: resolve_model_recommendation(
+            owner=owner,
+            active_models=active_models,
+            category=category,
+            catalog=catalog,
+        )
+        for category in MODEL_CATEGORIES
+    }

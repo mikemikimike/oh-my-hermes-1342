@@ -139,6 +139,54 @@ runs:
 omh setup --profile-pack cto-loop
 ```
 
+## Optional Guided Model Configuration
+
+Run this only when the user asks to configure models. Model configuration is
+not required for OMH installation, and a missing shipped recommendation must
+not turn install or doctor into a failure.
+
+Use this exact agent-facing prompt:
+
+```text
+Inspect my bounded local model metadata and help me configure OMH model routing. Ask me to confirm which models are still active. Keep Hermes-native aliases separate from Maestro external handoffs, show the exact alias preview and config digest before any write, and apply only after I approve it. Keep recommendation categories editable; if Kimi, GPT, or Claude is missing, continue with a confirmed compatible model such as Qwen or Gemini. Explain Grok's editorial X-platform affinity without presenting it as measured performance. Treat CCAPI and Apitopia as user-declared editorial provider preferences only. Do not read, copy, request, or echo credentials.
+```
+
+Agent/maintainer procedure:
+
+1. Preview bounded local observations and confirm active models with the user.
+   A session-history observation is `observed_before`, not active confirmation.
+2. Build a Hermes-native alias preview without applying it. Repeat
+   `--confirm-model` and `--model-alias` as needed:
+
+   ```sh
+   omh setup --model-setup \
+     --confirm-model google/gemini-3.1-pro \
+     --model-alias main=google/gemini-3.1-pro \
+     --no-interactive --json
+   ```
+
+3. Show the user `steps.model_activation.preview.changes` and
+   `config_digest`. After explicit approval, repeat the command with
+   `--apply-model-config --model-config-digest <preview-digest>`. A collision
+   requires a separate explicit `--allow-model-alias-collision` choice.
+4. Verify `steps.model_activation.verification.status == "verified"`, then run
+   the offline agent/maintainer report:
+
+   ```sh
+   omh coding model-routing status --json
+   ```
+
+Hermes aliases are written through Hermes' native `config` commands. Maestro is
+an OMH-local coordinator for prepared external Codex, Claude Code, OMO, OMC,
+OMX, and generic handoffs; it is not an executor and does not own Hermes-native
+work. `pi` and `senpi` are OMO runtime-family hosts. Recommendations are
+editable editorial metadata, not provider availability or benchmark evidence.
+Qwen, Gemini, or another confirmed compatible model can be selected when a
+shipped recommendation is absent. Grok's `x_platform_data` position is an
+editable X-platform affinity only. CCAPI and Apitopia are never probed; their
+entries remain user-declared provider-family preferences, and credentials stay
+in their native owner.
+
 ## First Hermes Prompt
 
 After install and any required Hermes restart/reload, try:

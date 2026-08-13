@@ -43,6 +43,7 @@ from ..wrapper.lifecycle import (
 )
 from .common import _chat_input_and_metadata, _explicit_source_metadata, _paths, _print_json, _resolved_executor, _wants_json
 from .dynamic_workflow import _add_dynamic_workflow_command, cmd_coding_dynamic_workflow
+from .hermes_child import add_hermes_child_command
 from .status_board import add_coding_status_board_command
 
 
@@ -745,8 +746,23 @@ def cmd_coding_model_route(args: argparse.Namespace) -> int:
     if not args.executor:
         raise OmhError("--executor is required unless --explain is given")
     local_catalog = None
+    active_models = None
     if getattr(args, "from_inventory", False):
-        local_catalog = _local_model_catalogs().get(str(args.executor or "").strip().casefold())
+        inventory = _local_model_inventory()
+        local_catalog = _catalog_from_inventory(inventory).get(
+            str(args.executor or "").strip().casefold()
+        )
+        if str(args.executor or "").strip().casefold() == "hermes":
+            active_models = _confirmed_active_models(inventory)
+    recommendation_overrides = None
+    recommendation_path = getattr(args, "recommendations", None)
+    if recommendation_path:
+        from ..coding.model_recommendations import load_recommendation_overrides
+
+        try:
+            recommendation_overrides = load_recommendation_overrides(recommendation_path)
+        except (OSError, ValueError) as exc:
+            raise OmhError(str(exc)) from exc
     route = resolve_model_route(
         args.executor,
         requested_model=args.model or "",
@@ -754,7 +770,10 @@ def cmd_coding_model_route(args: argparse.Namespace) -> int:
         role=args.role or "",
         requested_domain=getattr(args, "domain", None) or "",
         requested_depth=getattr(args, "depth", None) or "",
+        requested_category=getattr(args, "category", None) or "",
         local_catalog=local_catalog,
+        active_models=active_models,
+        recommendation_overrides=recommendation_overrides,
     )
     if _wants_json(args):
         _print_json(route)
@@ -788,6 +807,92 @@ def cmd_coding_model_route(args: argparse.Namespace) -> int:
         lines.append(f"note: {reason}")
     lines.append(str(route.get("claim_boundary", "")))
     print("\n".join(lines))
+    return 0
+
+
+def cmd_coding_model_routing_status(args: argparse.Namespace) -> int:
+    from ..maintenance.advisory import build_model_routing_status
+
+    payload = build_model_routing_status(
+        _paths(args),
+        discovery_home=Path(args.discovery_home).expanduser() if args.discovery_home else None,
+    )
+    if _wants_json(args):
+        _print_json(payload)
+        return 0
+    models = payload["models"]
+    hermes = payload["hermes"]
+    maestro = payload["maestro"]
+    owner = payload["owner_learning"]
+    confirmed = ", ".join(str(entry["model_id"]) for entry in models["confirmed"]) or "none"
+    discovered = ", ".join(str(entry["model_id"]) for entry in models["discovered_only"]) or "none"
+    aliases = ", ".join(f"{name}={target}" for name, target in hermes["aliases"].items()) or "none"
+    print("Model routing status (local metadata only):")
+    print(f"Confirmed active: {confirmed}")
+    print(f"Discovered only (not execution proof): {discovered}")
+    print(f"Hermes aliases ({hermes['status']}): {aliases}")
+    print(f"Maestro missing recommendation heads: {', '.join(maestro['missing_heads']) or 'none'}")
+    print(f"Owner learning: {owner['status']}")
+    print(f"Next action: {payload['next_action']}")
+    print(str(payload["claim_boundary"]))
+    return 0
+
+
+def cmd_coding_model_routing_reset(args: argparse.Namespace) -> int:
+    from ..routing.owner_preference import (
+        empty_owner_preference_state,
+        owner_preference_path,
+        reset_owner_preference,
+        validate_owner_preference,
+        write_owner_preference,
+    )
+    from ..system.local_store import read_json_object_result, utc_now
+
+    paths = _paths(args)
+    path = owner_preference_path(paths)
+    previous_status = "missing"
+    if path.exists():
+        state, error = read_json_object_result(path)
+        validation_errors = validate_owner_preference(state) if state is not None else []
+        if error or state is None or validation_errors:
+            detail = error or "; ".join(validation_errors) or "expected JSON object"
+            raise OmhError(
+                f"owner preference state is corrupt at {path}: {detail}; "
+                "repair or archive it before reset (no file was changed)"
+            )
+        previous_status = "present"
+    else:
+        state = empty_owner_preference_state()
+    try:
+        reset = reset_owner_preference(
+            state,
+            route_family=args.route_family,
+            reason=args.reason,
+            occurred_at=utc_now(),
+        )
+    except ValueError as exc:
+        raise OmhError(str(exc)) from exc
+    written = write_owner_preference(paths, reset)
+    payload = {
+        "schema_version": "model_routing_reset/v1",
+        "status": "reset",
+        "previous_state": previous_status,
+        "route_family": args.route_family,
+        "reason": args.reason,
+        "path": str(written),
+        "reset_scope": "owner_preference_metadata_only",
+        "next_action": "Run `omh coding model-routing status` to verify the route now requires an explicit owner choice.",
+        "claim_boundary": (
+            "Reset changes only OMH owner-preference metadata. It does not change Hermes aliases, "
+            "provider credentials, recommendations, model availability, or execution state."
+        ),
+    }
+    if _wants_json(args):
+        _print_json(payload)
+    else:
+        print(f"Reset owner preference for {args.route_family} ({previous_status} state).")
+        print(str(payload["next_action"]))
+        print(str(payload["claim_boundary"]))
     return 0
 
 
@@ -845,12 +950,47 @@ def _local_model_catalogs() -> dict[str, dict[str, object]]:
     The I/O boundary lives here in the command layer: the route resolver and
     contract builder receive the catalog as data and stay pure.
     """
-    from ..coding.model_inventory import inventory_model_catalog, local_model_inventory
+    return _catalog_from_inventory(_local_model_inventory())
 
-    catalog = inventory_model_catalog(local_model_inventory())
+
+def _local_model_inventory() -> dict[str, object]:
+    from ..coding.model_inventory import local_model_inventory
+
+    return local_model_inventory()
+
+
+def _catalog_from_inventory(inventory: dict[str, object]) -> dict[str, dict[str, object]]:
+    from ..coding.model_inventory import inventory_model_catalog
+
+    catalog = inventory_model_catalog(inventory)
     if catalog is None:
         return {}
     return {str(catalog.get("executor_profile", "")): catalog}
+
+
+def _confirmed_active_models(inventory: dict[str, object]) -> list[dict[str, object]]:
+    discovery = inventory.get("model_discovery")
+    observations = discovery.get("observations", []) if isinstance(discovery, dict) else []
+    active: list[dict[str, object]] = []
+    for observation in observations:
+        if not isinstance(observation, dict) or observation.get("status") != "confirmed_active":
+            continue
+        model_id = str(observation.get("model_id", ""))
+        provider = str(observation.get("provider", ""))
+        if not model_id:
+            continue
+        active.append(
+            {
+                "model_alias": model_id.rsplit("/", 1)[-1],
+                "model_id": model_id,
+                "provider": provider,
+                "provider_family": provider,
+                "model_family": "",
+                "compatible_owners": ["hermes"],
+                "status": "confirmed_active",
+            }
+        )
+    return active
 
 
 def cmd_coding_composition_guide(args: argparse.Namespace) -> int:
@@ -1553,6 +1693,14 @@ def _add_coding_commands(sub) -> None:
     model_route.add_argument("--effort", default=None, help="Reasoning effort for profiles that support one.")
     model_route.add_argument("--role", default=None, help="Subagent role: brain, implementation, design_visual, review, docs, research.")
     model_route.add_argument(
+        "--category",
+        default=None,
+        help=(
+            "OMO/ULW model category, orthogonal to role: visual-engineering, ultrabrain, deep, "
+            "artistry, quick, unspecified-low, unspecified-high, or writing; ulw-* aliases accepted."
+        ),
+    )
+    model_route.add_argument(
         "--explain",
         action="store_true",
         help="Render the effective profile x role resolution matrix with full chains and provenance.",
@@ -1579,8 +1727,38 @@ def _add_coding_commands(sub) -> None:
             "a built-in catalog; built-in catalogs always win."
         ),
     )
+    model_route.add_argument(
+        "--recommendations",
+        default=None,
+        help="Optional model_recommendation_overrides/v1 JSON file for editable routing order.",
+    )
     model_route.add_argument("--json", action="store_true", help="Emit the machine payload instead of plain text.")
     model_route.set_defaults(func=cmd_coding_model_route)
+
+    model_routing = coding_sub.add_parser(
+        "model-routing",
+        help="Inspect local model routing readiness or reset owner-learning metadata.",
+    )
+    model_routing_sub = model_routing.add_subparsers(dest="model_routing_command", required=True)
+    model_routing_status = model_routing_sub.add_parser(
+        "status",
+        help="Explain discovered/confirmed models, Hermes aliases, Maestro recommendations, and owner learning.",
+    )
+    model_routing_status.add_argument(
+        "--discovery-home",
+        default=None,
+        help="Local home whose allowlisted coding-agent metadata roots are scanned (default: Hermes home's parent).",
+    )
+    model_routing_status.add_argument("--json", action="store_true", help="Emit the machine payload instead of plain text.")
+    model_routing_status.set_defaults(func=cmd_coding_model_routing_status)
+    model_routing_reset = model_routing_sub.add_parser(
+        "reset",
+        help="Reset one learned coding-owner preference; no model/provider configuration is changed.",
+    )
+    model_routing_reset.add_argument("--route-family", required=True, help="Opaque route-family id to reset.")
+    model_routing_reset.add_argument("--reason", default="operator_reset", help="Opaque metadata reason for the reset.")
+    model_routing_reset.add_argument("--json", action="store_true", help="Emit the machine payload instead of plain text.")
+    model_routing_reset.set_defaults(func=cmd_coding_model_routing_reset)
 
     model_inventory = coding_sub.add_parser(
         "model-inventory",
@@ -1601,6 +1779,7 @@ def _add_coding_commands(sub) -> None:
     composition_guide.add_argument("--json", action="store_true", help="Emit the machine payload instead of plain text.")
     composition_guide.set_defaults(func=cmd_coding_composition_guide)
 
+    add_hermes_child_command(coding_sub)
     add_coding_status_board_command(coding_sub)
 
     delegate = coding_sub.add_parser("delegate")

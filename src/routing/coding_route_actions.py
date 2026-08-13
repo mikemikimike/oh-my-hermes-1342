@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Any, Mapping
 
 from .executor_cues import (
     NAMED_CODING_AGENT_PHRASES,
@@ -9,6 +10,7 @@ from .executor_cues import (
     contains_boundary_phrase,
 )
 from .localization import normalized_phrase
+from .owner_preference import owner_preference_decision
 
 
 CODING_ROUTE_DECISION_SCHEMA_VERSION = "coding_route_decision/v1"
@@ -38,9 +40,12 @@ CODING_ROUTE_NEXT_ACTIONS: tuple[str, ...] = (
 CODING_ROUTE_DECISION_SOURCES: tuple[str, ...] = (
     "request_named_executor",
     "recorded_setup_preference",
+    "learned_owner_preference",
     "request_capability_match",
     "user_choice_required",
 )
+
+OWNER_PREFERENCE_ROUTE_FAMILY = "ulw-coding-delivery"
 
 # Owner ids reuse the executor profile ids the handoff builders already understand.
 # The phrase groups partition `NAMED_CODING_AGENT_PHRASES` from the executor-name policy
@@ -143,6 +148,13 @@ class CodingRouteDecision:
     selected_owner: str = ""
     selected_route_family: str = ""
     matched_cues: tuple[str, ...] = ()
+    owner_preference_action: str = "bypass_owner_learning"
+    owner_preference_reason_code: str = "owner_state_unavailable"
+    owner_preference_route_family: str = OWNER_PREFERENCE_ROUTE_FAMILY
+    owner_preference_evidence_count: int = 0
+    owner_preference_override_available: bool = False
+    owner_preference_reset_available: bool = False
+    owner_preference_reset_reason: str = ""
 
 
 def resolve_coding_route_decision(
@@ -150,6 +162,11 @@ def resolve_coding_route_decision(
     *,
     requested_owner: str = "",
     recorded_owner: str = "",
+    owner_preference_state: Mapping[str, Any] | None = None,
+    coding_delivery: bool = True,
+    ulw: bool = True,
+    owner_ready: bool = True,
+    capability_fit: bool = True,
 ) -> CodingRouteDecision:
     """Return the coding-owner state for an already-normalized coding request.
 
@@ -160,6 +177,21 @@ def resolve_coding_route_decision(
     """
     owners = named_executor_owners(normalized_query)
     unsafe = _matched_phrases(normalized_query, UNSAFE_AUTOMATIC_SELECTION_PHRASES)
+    owner_preference = owner_preference_decision(
+        owner_preference_state,
+        route_family=OWNER_PREFERENCE_ROUTE_FAMILY,
+        coding_delivery=coding_delivery,
+        ulw=ulw,
+        named_owner=(
+            len(owners) == 1
+            or str(requested_owner or "").strip().casefold() not in RECORDED_OWNER_UNSET_VALUES
+        ),
+        multiple_owners=len(owners) > 1,
+        authority_blocked=bool(unsafe),
+        owner_ready=owner_ready,
+        capability_fit=capability_fit,
+    )
+    preference_fields = _owner_preference_fields(owner_preference_state, owner_preference)
 
     normalized_requested_owner = str(requested_owner or "").strip().casefold()
     if normalized_requested_owner and normalized_requested_owner not in RECORDED_OWNER_UNSET_VALUES and not unsafe:
@@ -171,6 +203,7 @@ def resolve_coding_route_decision(
             choice_required=False,
             selected_owner=normalized_requested_owner,
             matched_cues=("requested_executor_target",),
+            **preference_fields,
         )
 
     if len(owners) == 1 and not unsafe:
@@ -183,6 +216,7 @@ def resolve_coding_route_decision(
             choice_required=False,
             selected_owner=owner,
             matched_cues=(f"named_executor:{owner}",),
+            **preference_fields,
         )
     if len(owners) > 1:
         return CodingRouteDecision(
@@ -192,6 +226,7 @@ def resolve_coding_route_decision(
             confidence="low",
             choice_required=True,
             matched_cues=tuple(f"named_executor:{owner}" for owner in owners),
+            **preference_fields,
         )
     if unsafe:
         return CodingRouteDecision(
@@ -201,6 +236,7 @@ def resolve_coding_route_decision(
             confidence="low",
             choice_required=True,
             matched_cues=tuple(unsafe),
+            **preference_fields,
         )
 
     normalized_recorded_owner = str(recorded_owner or "").strip().casefold()
@@ -213,6 +249,19 @@ def resolve_coding_route_decision(
             choice_required=False,
             selected_owner=normalized_recorded_owner,
             matched_cues=("recorded_setup_preference",),
+            **preference_fields,
+        )
+
+    if owner_preference.action == "use_learned_default":
+        return CodingRouteDecision(
+            next_action=RECORDED_OWNER_NEXT_ACTION,
+            source="learned_owner_preference",
+            reason=owner_preference.reason,
+            confidence="high",
+            choice_required=False,
+            selected_owner=owner_preference.selected_owner,
+            matched_cues=("learned_owner_preference",),
+            **preference_fields,
         )
 
     family, family_cues = _compatible_route_family(normalized_query)
@@ -225,6 +274,7 @@ def resolve_coding_route_decision(
             choice_required=False,
             selected_route_family=family,
             matched_cues=family_cues,
+            **preference_fields,
         )
 
     return CodingRouteDecision(
@@ -234,6 +284,7 @@ def resolve_coding_route_decision(
         confidence="low",
         choice_required=True,
         matched_cues=(),
+        **preference_fields,
     )
 
 
@@ -262,6 +313,13 @@ def coding_route_decision_payload(decision: CodingRouteDecision) -> dict[str, ob
         "selected_owner": decision.selected_owner,
         "selected_route_family": decision.selected_route_family,
         "matched_cues": list(decision.matched_cues),
+        "owner_preference_action": decision.owner_preference_action,
+        "owner_preference_reason_code": decision.owner_preference_reason_code,
+        "owner_preference_route_family": decision.owner_preference_route_family,
+        "owner_preference_evidence_count": decision.owner_preference_evidence_count,
+        "owner_preference_override_available": decision.owner_preference_override_available,
+        "owner_preference_reset_available": decision.owner_preference_reset_available,
+        "owner_preference_reset_reason": decision.owner_preference_reset_reason,
         "lane_next_action": CODING_ROUTE_LANE_NEXT_ACTION,
         "user_choice_next_action": USER_CHOICE_NEXT_ACTION,
         "claim_boundary": CODING_ROUTE_DECISION_CLAIM_BOUNDARY,
@@ -277,6 +335,23 @@ def user_choice_coding_route_decision(reason: str) -> CodingRouteDecision:
         confidence="low",
         choice_required=True,
     )
+
+
+def _owner_preference_fields(
+    state: Mapping[str, Any] | None,
+    decision: object,
+) -> dict[str, object]:
+    route = state.get("routes", {}).get(OWNER_PREFERENCE_ROUTE_FAMILY, {}) if isinstance(state, Mapping) else {}
+    reset_reason = str(route.get("reset_reason", "")) if isinstance(route, Mapping) else ""
+    return {
+        "owner_preference_action": getattr(decision, "action"),
+        "owner_preference_reason_code": getattr(decision, "reason_code"),
+        "owner_preference_route_family": getattr(decision, "route_family"),
+        "owner_preference_evidence_count": getattr(decision, "evidence_count"),
+        "owner_preference_override_available": getattr(decision, "override_available"),
+        "owner_preference_reset_available": getattr(decision, "action") == "use_learned_default",
+        "owner_preference_reset_reason": reset_reason,
+    }
 
 
 def _compatible_route_family(normalized_query: str) -> tuple[str, tuple[str, ...]]:

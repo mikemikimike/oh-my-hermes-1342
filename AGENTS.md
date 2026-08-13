@@ -110,6 +110,14 @@ PR without the chat history.
   `dispatch` invocation. Bridge dispatch is a separate axis from chat
   prompt-handoff semantics: chat-prepared handoffs remain prompt-only for
   prompt-only profiles.
+- The approved Hermes-native child boundary (`omh coding hermes-child dispatch`,
+  2026-08 owner approval) is a second explicit operator/maintainer surface for
+  one isolated local `hermes --oneshot` process. It requires
+  `--confirm-dispatch`, accepts prompts only through stdin/files, enforces a
+  depth-one recursion limit and safe-mode file tools, records authenticated
+  `routing_observation/v1` evidence, and never runs automatically. This
+  boundary supports observed Hermes execution and the explicit benchmark
+  controller; it does not make core OMH a provider client or hidden runtime.
 - No Hermes core patching.
 - Runtime artifacts are local, deterministic, schema-versioned, and
   metadata-only by default.

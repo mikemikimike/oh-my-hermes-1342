@@ -1,0 +1,41 @@
+{
+  "schema_version": "omh_live_model_tool_benchmark/v1",
+  "title": "OMH-native Hermes Agent model calibration benchmark",
+  "claim_boundary": "Measures baseline and model-family-calibrated OMH prompts through the explicit local Hermes child boundary on a synthetic pinned corpus; does not establish universal model or harness superiority.",
+  "live_harness": {
+    "kind": "omh_hermes_child",
+    "omh_schema_version": "coding_model_route/v2",
+    "observation_schema_version": "routing_observation/v1",
+    "dispatch_is_explicit": true
+  },
+  "execution_policy": {
+    "offline_by_default": true,
+    "live_requires_explicit_flag": true,
+    "model_fallback": false,
+    "concurrency": 1,
+    "network_in_fake_harness": false
+  },
+  "corpus": {
+    "schema_version": "omh_live_model_tool_corpus/v1",
+    "development_seeds": [7919],
+    "evaluation_seeds": [104729, 130363, 155921],
+    "templates_per_class": 2,
+    "classes": ["edit", "read", "search", "lsp", "routing"],
+    "evaluation_observations_per_model_condition": 30
+  },
+  "models": [
+    {"family": "default", "provider": "offline", "id": "fake-model", "effort": "none", "live": false},
+    {"family": "gpt", "provider": "openai-codex", "id": "gpt-5.6-sol", "effort": "medium", "live": true},
+    {"family": "gpt", "provider": "openai-codex", "id": "gpt-5.6-terra", "effort": "high", "live": true},
+    {"family": "claude", "provider": "claude-sdk-oauth", "id": "claude-opus-5", "effort": "high", "live": true},
+    {"family": "claude", "provider": "claude-sdk-oauth", "id": "claude-fable-5", "effort": "medium", "live": true},
+    {"family": "kimi", "provider": "opengateway", "id": "moonshotai/kimi-k3-ultrafast", "effort": "medium", "live": true},
+    {"family": "qwen", "provider": "qwen", "id": "qwen3-coder-next", "effort": "high", "live": true},
+    {"family": "deepseek", "provider": "deepseek", "id": "deepseek-v4-pro", "effort": "high", "live": true},
+    {"family": "glm", "provider": "zai", "id": "glm-5", "effort": "high", "live": true}
+  ],
+  "timeouts_seconds": {"edit": 600, "read": 300, "search": 300, "lsp": 600, "routing": 300, "hard": 900},
+  "analysis": {"bootstrap_repetitions": 10000, "seed": 20260813, "cluster": "template", "binary_test": "exact_mcnemar", "multiple_testing": "holm", "familywise_alpha": 0.05},
+  "integrity": {"algorithm": "sha256", "canonical_json": "sorted-keys-compact-ascii", "validators_controller_only": true},
+  "failure_taxonomy": ["model_unavailable", "authentication_failed", "provider_error", "rate_limited", "adapter_protocol_error", "invalid_final_json", "timeout", "process_crash", "cleanup_failed", "output_limit_exceeded", "no_tool_use", "wrong_tool", "mutation_outside_scope", "first_attempt_failed", "tests_failed", "semantic_validator_failed", "missing_fact", "unsupported_fact", "invalid_citation", "search_false_positive", "search_false_negative", "lsp_not_used", "lsp_wrong_location", "diagnostics_not_clean", "routing_wrong_field", "silent_explicit_substitution", "usage_unavailable"]
+}

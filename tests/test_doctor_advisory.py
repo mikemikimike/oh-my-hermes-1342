@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -28,6 +29,7 @@ from omh.commands import setup as setup_commands
 from omh.paths import resolve_paths
 
 ADVISORY_CHECK_IDS = {
+    "model_routing_readiness",
     "auxiliary_routing_unset",
     "soul_missing_or_starter",
     "hermes_memory_staleness",
@@ -398,6 +400,7 @@ class MembershipGuardrailTests(unittest.TestCase):
         self.assertEqual(
             statuses,
             {
+                "model_routing_readiness": "advice",
                 "auxiliary_routing_unset": "advice",
                 "soul_missing_or_starter": "advice",
                 "hermes_memory_staleness": "advice",
@@ -475,6 +478,28 @@ class ExitCodeParityTests(unittest.TestCase):
         payload = setup_commands._doctor_result(args)
         self.assertEqual(payload["ok"], doctor_ok(run_doctor(paths)))
         self.assertEqual(payload["advisories"]["contract"], CONTRACT)
+
+    def test_advisory_only_model_gap_keeps_doctor_exit_zero(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        omh_home = root / ".omh"
+        hermes_home = root / ".hermes"
+        args = self._args(omh_home, hermes_home, json=True)
+        with mock.patch(
+            "omh.commands.setup.run_doctor",
+            return_value=[Check("base", True, "healthy")],
+        ):
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = setup_commands.cmd_doctor(args)
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["ok"])
+        model_advice = next(
+            entry
+            for entry in payload["advisories"]["entries"]
+            if entry["check_id"] == "model_routing_readiness"
+        )
+        self.assertEqual(model_advice["status"], "advice")
 
     def test_advice_section_renders_in_text_output(self) -> None:
         root = Path(tempfile.mkdtemp())

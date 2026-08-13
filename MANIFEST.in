@@ -1,0 +1,3 @@
+recursive-include benchmarks/live-model-tools/v1 *
+prune benchmarks/live-model-tools/v1/artifacts
+global-exclude __pycache__ *.py[cod]

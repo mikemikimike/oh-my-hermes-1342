@@ -49,6 +49,43 @@ See "What the lock actually guarantees" in
 Practical implications for a wrapper or operator running more than one agent
 against the same OMH home:
 
+## Explicit Hermes Child Control
+
+Audience: **agents, operators, and maintainers**. Normal users ask Hermes for
+the outcome; they do not need to run these commands.
+
+OMH can prepare, explicitly dispatch, inspect, and cancel one isolated local
+Hermes Agent child:
+
+```bash
+omh coding hermes-child prepare \
+  --model qwen3-coder-next --provider qwen --reasoning high \
+  --parent-run-id parent-1 --run-id child-1 --json < prompt.txt
+
+omh coding hermes-child dispatch --confirm-dispatch \
+  --model qwen3-coder-next --provider qwen --reasoning high \
+  --parent-run-id parent-1 --run-id child-1 --json < prompt.txt
+
+omh coding hermes-child status --run-id child-1 --json
+omh coding hermes-child cancel --run-id child-1 --json
+```
+
+`prepare` starts no process. `dispatch` is never implicit: it requires
+`--confirm-dispatch`, sends the prompt over stdin, limits recursion to one
+isolated child, and records `routing_observation/v1`. Status, tool count, token
+usage, and cost are shown only when Hermes produced observed telemetry; OMH
+does not estimate missing values.
+
+Model routing preferences are also an agent/operator surface:
+
+```bash
+omh coding model-routing status --json
+omh coding model-routing reset --route-family <id> --json
+```
+
+These report or clear explicit local routing preference metadata. They do not
+execute a model or prove that a model is available.
+
 - Prefer one long-lived wrapper process per chat surface rather than
   multiple processes racing to update the same session or run record.
 - If two agents must write concurrently (for example, two coding executors
@@ -130,6 +167,37 @@ evidence, not to reimplement them. A handoff prepared for Kanban or
 Kanban task, dispatched the subagent, or that a worktree exists. The same
 prepared-vs-observed boundary that governs every other OMH contract applies
 here: naming a coordination primitive is not proof it ran.
+
+## Model Routing Across Multiple Agents
+
+Model identity does not change the shared-state rules. Keep these owners
+separate when several agents are active:
+
+- Hermes owns `HERMES_HOME/config.yaml`, native aliases, provider bindings,
+  skills, Kanban model pins, and `delegate_task` execution. Guided model setup
+  must preview and digest-bind every alias change; a concurrent Hermes config
+  write invalidates that preview and must be re-inspected rather than retried
+  blindly.
+- Maestro coordinates prepared external Codex, Claude Code, OMO, OMC, OMX, and
+  generic handoffs. It is not an executor, does not own Hermes-native work, and
+  cannot turn one agent's prepared route into another agent's observed run.
+- `pi` and `senpi` are host CLIs in the OMO runtime family, not additional
+  owners. Their metadata observations do not select a model for another agent.
+- Recommendation categories and aliases are editable user policy. A missing
+  Kimi, GPT, or Claude recommendation can fall through to a confirmed compatible
+  Qwen, Gemini, Grok, or other model without blocking setup. An explicitly
+  requested unavailable model instead requires a new choice.
+- Grok's `x_platform_data` placement is editorial X-platform affinity, not a
+  measured capability or a reason to override a user's model choice. CCAPI and
+  Apitopia are likewise editorial provider-family preferences; each active
+  route must be user-declared and credentials remain with the native owner.
+
+The agent/maintainer `omh coding model-routing status` report can compare local
+observations, Hermes aliases, Maestro chains, and owner-learning metadata. It is
+an offline advisory snapshot, not a cross-process lock or provider/runtime
+observation. `omh coding model-routing reset --route-family <id>` changes only
+OMH owner-preference metadata and must not be used as a substitute for
+coordinating a live agent or editing Hermes aliases.
 
 ## Executor-Neutral Throughout
 
