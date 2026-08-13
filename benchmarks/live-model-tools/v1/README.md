@@ -68,3 +68,29 @@ version-aware:
 
 Provider parameters are not claimed unless Hermes actually exposes them and the
 observation records them.
+
+## Latest measured status
+
+The 2026-08-13 evaluation run completed the full offline fake matrix:
+
+| Harness | Condition | Passed | Scheduled | Delta |
+| --- | --- | ---: | ---: | ---: |
+| `fake` | baseline | 30 | 30 | |
+| `fake` | optimized | 30 | 30 | `0.0` |
+
+This proves the pinned corpus, controller validators, pairing, analysis, and
+audit pipeline execute end to end. It is not model-performance evidence. The
+audit correctly returned `claim_permitted: false` and requires the public
+statement: "A reproducible benchmark is available; current results are
+preliminary and are not a superiority claim."
+
+Live baseline smoke runs were attempted for Kimi K3, GPT-5.6 Sol, Claude Fable
+5, and GLM 5. All four isolated Hermes dispatches exited before producing a run
+record, so there is no live baseline-versus-optimized number to publish.
+The local model inventory confirms those families in OMO/Senpi, and Hermes has
+Kimi and GPT aliases, but the isolated child deliberately cannot read Hermes'
+`auth.json` or OMO/Senpi credentials. It accepts only provider-specific
+credential environment variables, and no matching variables were available to
+these runs. Do not present OMO/Senpi availability as Hermes child execution
+evidence or infer cost, token, quality, or superiority metrics from the failed
+smokes.

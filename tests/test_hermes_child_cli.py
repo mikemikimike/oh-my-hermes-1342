@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from _cli_harness import run_cli
+from omh.commands import hermes_child as hermes_child_command
 
 
 _FAKE_HERMES = r"""
@@ -59,6 +60,12 @@ class HermesChildCliTests(unittest.TestCase):
             "--reasoning", "high", "--parent-run-id", "parent-123",
             "--run-id", "child-456",
         ]
+
+    def test_observation_key_uses_binary_mode_when_platform_requires_it(self) -> None:
+        with patch.object(hermes_child_command.os, "O_BINARY", 0x8000, create=True):
+            flags = hermes_child_command._observation_key_open_flags()
+
+        self.assertEqual(flags & 0x8000, 0x8000)
 
     def test_prepare_is_default_safe_action_and_writes_no_prompt(self) -> None:
         secret = "SECRET_PREPARE_PROMPT_91"

@@ -467,7 +467,7 @@ def _observation_key(args: argparse.Namespace) -> bytes:
     try:
         descriptor = os.open(
             key_path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            _observation_key_open_flags(),
             0o600,
         )
     except FileExistsError:
@@ -481,6 +481,10 @@ def _observation_key(args: argparse.Namespace) -> bytes:
     if len(key) != 32 or key_path.is_symlink():
         raise OmhError("Hermes child observation integrity key is invalid")
     return key
+
+
+def _observation_key_open_flags() -> int:
+    return os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
 
 
 def _canonical_observation(observation: dict[str, object]) -> bytes:
