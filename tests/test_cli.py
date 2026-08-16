@@ -3593,6 +3593,49 @@ Latest runtime run: 20260625T090917585910Z-loop-goal-loop-8b5bec.
         self.assertIn("--command-package-updated", reentry_args)
         self.assertEqual(run.call_args_list[1].kwargs["env"][setup_commands.SELF_UPDATE_REENTRY_ENV], "1")
 
+    def test_update_self_update_streams_pip_output_in_human_mode_and_captures_in_json(self) -> None:
+        # A silent multi-minute archive download/build is indistinguishable
+        # from a hang; human mode must inherit stdio so pip's own progress
+        # shows, while JSON mode keeps stdout parseable by capturing.
+        plan = {"release": Namespace(package_url="https://example.invalid/omh.zip"), "python": sys.executable}
+        first = subprocess.CompletedProcess(args=["pip"], returncode=0, stdout="", stderr="")
+        second = subprocess.CompletedProcess(args=["omh"], returncode=0, stdout="", stderr="")
+
+        with patch.object(setup_commands.subprocess, "run", side_effect=[first, second]) as run:
+            with patch.object(setup_commands.sys, "argv", ["omh", "update"]):
+                setup_commands._run_command_package_self_update(Namespace(json=False), plan)
+        human_call = run.call_args_list[0]
+        self.assertNotIn("-q", human_call.args[0])
+        self.assertIsNone(human_call.kwargs["stdout"])
+        self.assertIsNone(human_call.kwargs["stderr"])
+        self.assertEqual(human_call.kwargs["timeout"], setup_commands.SELF_UPDATE_TIMEOUT_SECONDS)
+
+        first_json = subprocess.CompletedProcess(args=["pip"], returncode=0, stdout="", stderr="")
+        second_json = subprocess.CompletedProcess(args=["omh"], returncode=0, stdout="", stderr="")
+        with patch.object(setup_commands.subprocess, "run", side_effect=[first_json, second_json]) as run:
+            with patch.object(setup_commands.sys, "argv", ["omh", "update", "--json"]):
+                setup_commands._run_command_package_self_update(Namespace(json=True), plan)
+        json_call = run.call_args_list[0]
+        self.assertIn("-q", json_call.args[0])
+        self.assertEqual(json_call.kwargs["stdout"], subprocess.PIPE)
+        self.assertEqual(json_call.kwargs["timeout"], setup_commands.SELF_UPDATE_TIMEOUT_SECONDS)
+
+    def test_update_self_update_timeout_becomes_an_actionable_error(self) -> None:
+        plan = {"release": Namespace(package_url="https://example.invalid/omh.zip"), "python": sys.executable}
+
+        with patch.object(
+            setup_commands.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(cmd=["pip"], timeout=900),
+        ):
+            with patch.object(setup_commands.sys, "argv", ["omh", "update"]):
+                with self.assertRaises(OmhError) as raised:
+                    setup_commands._run_command_package_self_update(Namespace(json=False), plan)
+        message = str(raised.exception)
+        self.assertIn("timed out", message)
+        self.assertIn("https://example.invalid/omh.zip", message)
+        self.assertIn("omh update", message)
+
     def test_update_self_update_skips_local_channel_without_package_source(self) -> None:
         args = Namespace(
             command_package_updated=False,

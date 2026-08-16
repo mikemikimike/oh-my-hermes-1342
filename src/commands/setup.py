@@ -470,6 +470,12 @@ def _command_package_self_update_plan(args: argparse.Namespace) -> dict[str, obj
     }
 
 
+# Bounds the package download + sdist build. A repository archive of this repo
+# builds in well under two minutes on ordinary hardware; fifteen gives slow
+# links headroom while still turning a stalled network into an error.
+SELF_UPDATE_TIMEOUT_SECONDS = 900
+
+
 def _run_command_package_self_update(args: argparse.Namespace, plan: dict[str, object]) -> int:
     if plan.get("method") == "package_manager":
         return _run_package_manager_self_update(args, plan)
@@ -482,34 +488,50 @@ def _run_command_package_self_update(args: argparse.Namespace, plan: dict[str, o
     progress = _HumanProgress(enabled=not wants_json, use_color=_use_color())
     progress.header("OMH update", "Refresh the OMH command package and workflow pack.")
     progress.step(1, 2, "Updating omh command package", detail=package_url)
-    completed = subprocess.run(
-        [
-            python,
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "-q",
-            # A branch archive keeps one URL while its contents change, and pip
-            # caches by URL. Without this, `omh update` reinstalls whatever
-            # `main.zip` was downloaded last - it reports success, the version
-            # string does not move, and the user gets an older tree. Observed:
-            # a fresh venv still printed "Using cached main.zip" and installed
-            # a build from before the merge it was run to pick up.
-            # `--force-reinstall` does not help; it forces the reinstall, not
-            # the download.
-            "--no-cache-dir",
-            "--force-reinstall",
-            "--upgrade",
-            package_url,
-        ],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    pip_command = [
+        python,
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        # A branch archive keeps one URL while its contents change, and pip
+        # caches by URL. Without this, `omh update` reinstalls whatever
+        # `main.zip` was downloaded last - it reports success, the version
+        # string does not move, and the user gets an older tree. Observed:
+        # a fresh venv still printed "Using cached main.zip" and installed
+        # a build from before the merge it was run to pick up.
+        # `--force-reinstall` does not help; it forces the reinstall, not
+        # the download.
+        "--no-cache-dir",
+        "--force-reinstall",
+        "--upgrade",
+        package_url,
+    ]
+    # Human mode streams pip's own download/build lines: this step downloads a
+    # repository archive and builds a large sdist, which can take minutes, and
+    # a silent terminal during that window is indistinguishable from a hang —
+    # users kill it and report `omh update` as frozen. JSON mode keeps stdout
+    # parseable by capturing instead. Either way the step is bounded: a stalled
+    # network must become an actionable error, not an indefinite wait.
+    if wants_json:
+        pip_command.insert(pip_command.index("install") + 1, "-q")
+    capture = subprocess.PIPE if wants_json else None
+    try:
+        completed = subprocess.run(
+            pip_command,
+            text=True,
+            stdout=capture,
+            stderr=capture,
+            timeout=SELF_UPDATE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        raise OmhError(
+            f"command package update timed out after {SELF_UPDATE_TIMEOUT_SECONDS}s downloading/building "
+            f"{package_url}; check the network and rerun `omh update`"
+        ) from None
     if completed.returncode != 0:
         detail = _bounded_command_error(
-            completed.stderr or completed.stdout or "pip install failed"
+            completed.stderr or completed.stdout or "pip install failed (see output above)"
         )
         raise OmhError(f"command package update failed: {detail}")
     progress.done("command package updated")
@@ -539,17 +561,25 @@ def _run_package_manager_self_update(
         "Updating omh command package",
         detail=update_instruction,
     )
-    completed = subprocess.run(
-        update_command,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    pm_capture = subprocess.PIPE if wants_json else None
+    try:
+        completed = subprocess.run(
+            update_command,
+            text=True,
+            stdout=pm_capture,
+            stderr=pm_capture,
+            timeout=SELF_UPDATE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        raise OmhError(
+            f"command package update timed out after {SELF_UPDATE_TIMEOUT_SECONDS}s running "
+            f"`{' '.join(update_command)}`; check the network and rerun `omh update`"
+        ) from None
     if completed.returncode != 0:
         detail = _bounded_command_error(
             completed.stderr
             or completed.stdout
-            or f"{package_manager} update failed"
+            or f"{package_manager} update failed (see output above)"
         )
         raise OmhError(f"command package update failed: {detail}")
     progress.done("command package updated")
