@@ -84,6 +84,32 @@ class WorkArtifactShowShapeTests(unittest.TestCase):
         self.assertEqual((review["availability"], review["format"]), ("available", "diff"))
         self.assertIn("~ show_shape.py", review["body"])
 
+    def test_handoff_flow_is_available_when_its_contract_records_exact_edges(self) -> None:
+        result = build_work_artifact_show_shape(
+            HandoffShapeInput(
+                source_artifact_id="handoff-flow",
+                source_schema="coding_runtime_handoff/v1",
+                evidence_state="prepared_not_observed",
+                nodes=(
+                    ShapeNode("handoff", "Prepared handoff", ("handoff-flow#status",)),
+                    ShapeNode("executor", "Selected executor", ("handoff-flow#profile",)),
+                ),
+                edges=(
+                    ShapeEdge(
+                        "handoff",
+                        "executor",
+                        ("handoff-flow#dispatch_contract",),
+                        "dispatches",
+                    ),
+                ),
+            ),
+            lens="flow",
+        ).to_dict()
+
+        self.assertEqual(result["availability"], "available")
+        self.assertIn("handoff-flow#dispatch_contract", result["body"])
+        self.assertEqual(result["evidence_state"], "prepared_not_observed")
+
     def test_unavailable_paths_are_explicit_and_do_not_invent_missing_evidence(self) -> None:
         no_refs = build_work_artifact_show_shape(
             PlanShapeInput(

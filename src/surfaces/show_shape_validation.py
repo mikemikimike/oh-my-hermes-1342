@@ -72,7 +72,7 @@ def lenses_for(source: WorkArtifactShapeInput) -> frozenset[str]:
     if isinstance(source, StatusShapeInput):
         return frozenset(("state", "structure"))
     if isinstance(source, HandoffShapeInput):
-        return frozenset(("ownership", "structure", "state"))
+        return frozenset(("flow", "ownership", "structure", "state"))
     if isinstance(source, ReviewShapeInput):
         return frozenset(("change", "structure"))
     return lenses_for_schema(source.source_schema)
@@ -84,7 +84,7 @@ def lenses_for_schema(schema: str) -> frozenset[str]:
     if schema in STATUS_SCHEMAS:
         return frozenset(("state", "structure"))
     if schema in HANDOFF_SCHEMAS:
-        return frozenset(("ownership", "structure", "state"))
+        return frozenset(("flow", "ownership", "structure", "state"))
     if schema in REVIEW_SCHEMAS:
         return frozenset(("change", "structure"))
     return frozenset()

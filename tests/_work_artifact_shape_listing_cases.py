@@ -42,7 +42,10 @@ class WorkArtifactShapeListingTests(WorkArtifactShapeSessionPayloads):
         handoff_shape = by_id["handoff_prompt"]["shape"]
         self.assertEqual(handoff_shape["availability"], "available")
         self.assertEqual(handoff_shape["reason"], "")
-        self.assertEqual(handoff_shape["lenses"], ["structure", "state", "ownership"])
+        self.assertEqual(
+            handoff_shape["lenses"],
+            ["flow", "structure", "state", "ownership"],
+        )
         for artifact_id in (
             "acceptance_and_verification",
             "status_brief",

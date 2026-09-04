@@ -91,8 +91,8 @@ class WorkArtifactShowShapeActionTests(WorkArtifactShapeSessionPayloads):
         bad_lens = build_work_artifact_show_shape_action(
             runtime_status, artifact_id="handoff_prompt", lens="causal"
         )
-        flow_lens = build_work_artifact_show_shape_action(
-            runtime_status, artifact_id="handoff_prompt", lens="flow"
+        change_lens = build_work_artifact_show_shape_action(
+            runtime_status, artifact_id="handoff_prompt", lens="change"
         )
         bad_format = build_work_artifact_show_shape_action(
             runtime_status, artifact_id="handoff_prompt", format="svg"
@@ -109,7 +109,7 @@ class WorkArtifactShowShapeActionTests(WorkArtifactShapeSessionPayloads):
             (unknown, "unknown_artifact_id"),
             (no_source, "source_not_recorded"),
             (bad_lens, "unsupported_lens"),
-            (flow_lens, "lens_not_supported_for_source_schema"),
+            (change_lens, "lens_not_supported_for_source_schema"),
             (bad_format, "unsupported_format"),
             (prompt_schema, "unsupported_source_schema"),
             (brief_schema, "unsupported_source_schema"),
@@ -122,11 +122,11 @@ class WorkArtifactShowShapeActionTests(WorkArtifactShapeSessionPayloads):
             self.assertEqual(shape["reason"], reason)
             self.assertEqual(shape["body"], "")
         prompt_shape = prompt_schema["shape"]
-        flow_shape = flow_lens["shape"]
+        change_shape = change_lens["shape"]
         self.assertIsInstance(prompt_shape, dict)
-        self.assertIsInstance(flow_shape, dict)
+        self.assertIsInstance(change_shape, dict)
         self.assertEqual(prompt_shape["source_schema"], "")
-        self.assertEqual(flow_shape["evidence_state"], "prepared_not_observed")
+        self.assertEqual(change_shape["evidence_state"], "prepared_not_observed")
 
     def test_mermaid_requires_observed_capability(self) -> None:
         # Given a prepared runtime handoff session.
