@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
+from _fanout_health_event_support import (
+    Clock as _Clock,
+    SHA as _SHA,
+    dispatch_fixture as _dispatch_fixture,
+    ready as _ready,
+    runner as _runner,
+)
 from _local_package import load_local_package
 
 load_local_package()
@@ -25,59 +31,6 @@ from omh.coding.fanout_journal import FANOUT_RUN_JOURNAL_SCHEMA_VERSION, write_f
 from omh.runtime.critical_path_health_sources import project_fanout_critical_path_health  # noqa: E402
 from omh.system.local_store import read_jsonl_objects  # noqa: E402
 from omh.system.paths import OmhPaths  # noqa: E402
-
-
-_SHA = "a" * 40
-
-
-class _Clock:
-    def __init__(self) -> None:
-        self.value = -5
-
-    def __call__(self) -> int:
-        self.value += 5
-        return self.value
-
-
-class _Completed:
-    returncode = 0
-    stdout = "done"
-    stderr = ""
-
-
-def _git(repo: Path, *argv: str) -> None:
-    subprocess.run(["git", *argv], cwd=repo, check=True, capture_output=True, text=True)
-
-
-def _dispatch_fixture(root: Path) -> tuple[OmhPaths, Path, str, dict[str, object]]:
-    paths = OmhPaths(omh_home=root / ".omh", hermes_home=root / ".hermes")
-    repo = root / "repo"
-    repo.mkdir(parents=True)
-    _git(repo, "init", "-q")
-    (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
-    _git(repo, "add", "seed.txt")
-    _git(repo, "-c", "user.name=tests", "-c", "user.email=tests@example.com", "commit", "-qm", "init")
-    sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
-    ).stdout.strip()
-    contract = write_fanout_contract(
-        paths,
-        build_fanout_contract(
-            "health telemetry",
-            [{"unit_id": "core", "title": "Core", "owner": "codex", "file_scope": ["src/"]}],
-        ),
-    )
-    return paths, repo, sha, contract
-
-
-def _runner(argv, **kwargs):
-    if argv[0] == "git":
-        return subprocess.run(argv, **kwargs)
-    return _Completed()
-
-
-def _ready(paths, profile, **kwargs):
-    return {"status": "ready", "profile": profile}
 
 
 class FanoutHealthEventTests(unittest.TestCase):
