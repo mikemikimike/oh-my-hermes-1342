@@ -99,7 +99,7 @@ class ProjectionContractFixtureTests(unittest.TestCase):
             assert isinstance(section, dict)
             self.assertIsNone(section["metrics"])
             self.assertIn({"task_id": "", "code": "cycle"}, section["evidence_gaps"])
-            for name, expected in (("unknown_artifact", "unknown_artifact_id"), ("unsupported_schema", "unsupported_source_schema"), ("mermaid_unavailable", "mermaid_capability_not_observed")):
+            for name, expected in (("unknown_artifact", "unknown_artifact_id"), ("unsafe_source_content", "unsafe_source_content"), ("mermaid_unavailable", "mermaid_capability_not_observed")):
                 case = cases[name]
                 self.assertIsInstance(case, dict)
                 assert isinstance(case, dict)

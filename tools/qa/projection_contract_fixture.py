@@ -34,7 +34,7 @@ def _adversarial_metadata(root: Path, fanout_id: str, session_id: str) -> dict[s
         "cyclic_lifecycle": {"command": _command(root, "runtime", "health-summary", "--run-id", fanout_id, "--json"), "expect": "metrics_null_with_gap"},
         "unknown_artifact": {"command": _command(root, "runtime", "artifacts", "show-shape", "--session-id", session_id, "--artifact-id", "unknown-artifact", "--lens", "flow", "--json"), "expect": "unknown_artifact_id"},
         "unsupported_lens": {"command": _command(root, "runtime", "artifacts", "show-shape", "--artifact-id", ARTIFACT_ID, "--lens", "invented", "--json"), "expect": "argparse_refusal"},
-        "unsupported_schema": {"command": _command(root, "runtime", "artifacts", "show-shape", "--artifact-id", "acceptance_and_verification", "--lens", "flow", "--json"), "expect": "unsupported_source_schema"},
+        "unsafe_source_content": {"command": _command(root, "runtime", "artifacts", "show-shape", "--artifact-id", "acceptance_and_verification", "--lens", "flow", "--json"), "expect": "unsafe_source_content"},
         "mermaid_unavailable": {"command": _command(root, "runtime", "artifacts", "show-shape", "--artifact-id", ARTIFACT_ID, "--lens", "structure", "--format", "mermaid", "--json"), "expect": "mermaid_capability_not_observed"},
         "invented_edge_refusal": {"command": _command(root, "runtime", "artifacts", "show-shape", "--artifact-id", ARTIFACT_ID, "--lens", "flow", "--json"), "expect": "recorded_edges_only"},
     }}
