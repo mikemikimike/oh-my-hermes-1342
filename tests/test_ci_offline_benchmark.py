@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import os
+import ast
 from pathlib import Path
 import statistics
-import subprocess
 import sys
 import unittest
 
@@ -27,7 +26,6 @@ from test_live_model_benchmark_framework import (  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
-UPSTREAM = ROOT / "benchmarks/live-model-tools/v1/tests/test_framework.py"
 WRAPPER_PREFIX = "test_live_model_benchmark_framework."
 
 
@@ -40,26 +38,16 @@ class CiOfflineBenchmarkTests(unittest.TestCase):
         self.assertTrue(hasattr(loaded, "OmhTargetedManifestAnalysisTests"))
         self.assertIs(sys.modules["statistics"], statistics)
 
-    def test_upstream_framework_runs_all_fifteen_tests_without_live_authority(self) -> None:
-        environment = {
-            key: value
-            for key, value in os.environ.items()
-            if key not in {"OMH_BENCH_ALLOW_LIVE", "OMH_BENCH_MAX_CALLS"}
+    def test_ci_integration_does_not_spawn_a_duplicate_framework_suite(self) -> None:
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        imported = {
+            alias.name
+            for node in tree.body
+            if isinstance(node, ast.Import)
+            for alias in node.names
         }
-        completed = subprocess.run(
-            [sys.executable, str(UPSTREAM)],
-            cwd=ROOT,
-            env=environment,
-            text=True,
-            capture_output=True,
-            timeout=120,
-            check=False,
-        )
 
-        combined = completed.stdout + completed.stderr
-        self.assertEqual(completed.returncode, 0, combined)
-        self.assertIn("Ran 15 tests", combined)
-        self.assertIn("OK", combined)
+        self.assertNotIn("subprocess", imported)
 
     def test_static_ci_plan_assigns_every_wrapper_test_exactly_once(self) -> None:
         inventory = discover_inventory(ROOT / "tests")

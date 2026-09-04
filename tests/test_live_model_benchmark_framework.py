@@ -112,7 +112,7 @@ class _UpstreamDelegationBase(unittest.TestCase):
         if not callable(method):
             self.fail(f"upstream test method is missing: {method_name}")
         with _upstream_import_scope():
-            method()
+            case.debug()
 
 
 class OmhBenchmarkFrameworkDelegationTests(_UpstreamDelegationBase):
