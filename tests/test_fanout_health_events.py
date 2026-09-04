@@ -211,6 +211,31 @@ class FanoutHealthEventTests(unittest.TestCase):
             self.assertIsNone(projected.record.metrics)
             self.assertIn(("", "health_event_journal_invalid"), projected.evidence_gaps)
 
+    def test_oversized_direct_journal_is_rejected_without_partial_metrics(self) -> None:
+        with TemporaryDirectory() as directory:
+            paths, repo, sha, contract = _dispatch_fixture(Path(directory))
+            fanout_id = str(contract["fanout_id"])
+            dispatch_fanout(
+                paths,
+                contract,
+                goal_text="health telemetry",
+                repo_root=repo,
+                base_sha=sha,
+                runner=_runner,
+                readiness=_ready,
+                emit_health_events=True,
+                health_clock=_Clock(),
+            )
+            path = fanout_health_events_path(paths, fanout_id)
+            first_record = path.read_text(encoding="utf-8").splitlines(keepends=True)[0]
+            path.write_text(first_record * 1_025, encoding="utf-8")
+
+            projected = project_fanout_critical_path_health(paths, fanout_id)
+
+            self.assertIsNone(projected.record.metrics)
+            self.assertEqual(projected.events, ())
+            self.assertIn(("", "health_event_journal_limit"), projected.evidence_gaps)
+
     def test_dispatch_write_failure_preserves_unit_status_and_readiness(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
