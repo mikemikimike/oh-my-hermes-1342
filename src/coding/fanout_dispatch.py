@@ -77,6 +77,7 @@ from .executor_readiness import probe_executor_readiness
 from .fanout_admission import AdaptiveFanoutAdmission
 from .fanout_artifact_sharing import plan_and_link_shared_artifacts
 from .fanout_diagnostics_hook import run_post_green_diagnostics
+from .fanout_final_review_hook import FinalReviewWaveEngine, run_final_review_after_integration
 from .diagnostic_execution import DiagnosticExecutionEngine
 from .fanout_contracts import (
     FANOUT_CLAIM_BOUNDARY,
@@ -1317,6 +1318,25 @@ def _producer_verification_is_sufficient(entry: Mapping[str, Any]) -> bool:
     return all(row.get("status") == "passed" for row in unit_rows)
 
 
+def _integration_tier_verification_passed(
+    results: Mapping[str, dict[str, Any]], selected_unit_ids: set[str]
+) -> bool:
+    """Whether every selected producer has dispatcher-observed integration GREEN."""
+    if not selected_unit_ids:
+        return False
+    for unit_id in selected_unit_ids:
+        entry = results.get(unit_id)
+        rows = entry.get("verification_checks") if entry is not None else None
+        if not isinstance(rows, list) or not any(
+            isinstance(row, Mapping)
+            and row.get("tier") == "integration"
+            and row.get("status") == "passed"
+            for row in rows
+        ):
+            return False
+    return True
+
+
 def _integrated_checkout_contains_producer_heads(
     runner: Callable[..., Any], integrated_worktree: Path, results: Mapping[str, dict[str, Any]]
 ) -> bool:
@@ -1586,6 +1606,7 @@ def dispatch_fanout(
     goal_attempt_progressed: bool = False,
     review_dispatch_budget: int = 1,
     diagnostic_engine: DiagnosticExecutionEngine | None = None,
+    final_review_engine: FinalReviewWaveEngine | None = None,
 ) -> dict[str, Any]:
     # The spawn guard runs before every other check, including the two
     # boundary re-checks below: it is the only one whose whole job is that no
@@ -2020,6 +2041,30 @@ def dispatch_fanout(
     finally:
         if verification_execution_gate is not None:
             verification_execution_gate.shutdown()
+    final_review: dict[str, object] | None = None
+    if final_review_engine is not None:
+        current_integrated_revision = (
+            _verification_worktree_revision(runner, integrated_worktree)
+            if integrated_worktree is not None
+            else None
+        )
+        producer_results = {unit_id: results[unit_id] for unit_id in selected if unit_id in results}
+        producer_evidence = (
+            len(producer_results) == len(selected)
+            and bool(producer_results)
+            and integrated_worktree is not None
+            and all(_producer_verification_is_sufficient(entry) for entry in producer_results.values())
+            and _integrated_checkout_contains_producer_heads(runner, integrated_worktree, producer_results)
+        )
+        final_review = run_final_review_after_integration(
+            final_review_engine,
+            integrated_revision=integrated_revision or "",
+            integration_green=(
+                _integration_tier_verification_passed(results, selected)
+                and current_integrated_revision == integrated_revision
+            ),
+            producer_evidence=producer_evidence,
+        )
     summary_units = [results[unit_id] for unit_id in order]
     for entry in summary_units:
         decision = resume_decisions.get(str(entry.get("unit_id", "")))
@@ -2050,6 +2095,8 @@ def dispatch_fanout(
         "base_sha": base_sha,
         "claim_boundary": f"{DISPATCH_CLAIM_BOUNDARY} {FANOUT_CLAIM_BOUNDARY}",
     }
+    if final_review is not None:
+        summary.update(final_review)
     summary["review_dispatch_budget"] = {
         "schema_version": "fanout_review_dispatch_budget/v1",
         "attempt_id": review_budget.attempt_id,
