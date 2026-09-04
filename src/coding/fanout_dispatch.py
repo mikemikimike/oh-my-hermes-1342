@@ -1324,7 +1324,7 @@ def _producer_verification_is_sufficient(entry: Mapping[str, Any]) -> bool:
 
 
 def _integration_tier_verification_passed(
-    results: Mapping[str, dict[str, Any]], selected_unit_ids: set[str]
+    results: Mapping[str, Mapping[str, object]], selected_unit_ids: set[str]
 ) -> bool:
     """Whether every selected producer has dispatcher-observed integration GREEN."""
     if not selected_unit_ids:
