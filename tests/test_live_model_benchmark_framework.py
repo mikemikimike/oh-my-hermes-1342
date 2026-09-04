@@ -18,6 +18,8 @@ fails loudly here instead of silently vanishing from the shard plan.
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterator
+from contextlib import contextmanager
 import importlib.util
 from pathlib import Path
 import sys
@@ -48,19 +50,52 @@ UPSTREAM_CLASS_BY_WRAPPER: dict[str, str] = {
 }
 
 
+def _local_module_names() -> tuple[str, ...]:
+    return tuple(sorted(
+        path.stem
+        for path in UPSTREAM_LIB.glob("*.py")
+        if path.stem != "__init__"
+    ))
+
+
+@contextmanager
+def _upstream_import_scope() -> Iterator[None]:
+    """Temporarily prefer benchmark-local bare imports without polluting tests."""
+    local_names = _local_module_names()
+    saved_modules = {name: sys.modules.get(name) for name in local_names}
+    original_path = list(sys.path)
+    for name in local_names:
+        sys.modules.pop(name, None)
+    sys.path.insert(0, str(UPSTREAM_LIB))
+    try:
+        yield
+    finally:
+        sys.path[:] = original_path
+        for name, saved in saved_modules.items():
+            if saved is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = saved
+
+
 def _load_upstream() -> ModuleType:
     """Load the upstream test module by explicit path, cached per process."""
 
     cached = sys.modules.get(UPSTREAM_MODULE_NAME)
     if cached is not None:
         return cached
-    if str(UPSTREAM_LIB) not in sys.path:
-        sys.path.insert(0, str(UPSTREAM_LIB))
     spec = importlib.util.spec_from_file_location(UPSTREAM_MODULE_NAME, UPSTREAM)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[UPSTREAM_MODULE_NAME] = module
-    spec.loader.exec_module(module)
+    loaded = False
+    try:
+        with _upstream_import_scope():
+            spec.loader.exec_module(module)
+        loaded = True
+    finally:
+        if not loaded:
+            sys.modules.pop(UPSTREAM_MODULE_NAME, None)
     return module
 
 
@@ -76,7 +111,8 @@ class _UpstreamDelegationBase(unittest.TestCase):
         method = getattr(case, method_name)
         if not callable(method):
             self.fail(f"upstream test method is missing: {method_name}")
-        method()
+        with _upstream_import_scope():
+            method()
 
 
 class OmhBenchmarkFrameworkDelegationTests(_UpstreamDelegationBase):

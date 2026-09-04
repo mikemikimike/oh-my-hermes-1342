@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import statistics
 import subprocess
 import sys
 import unittest
@@ -19,6 +20,10 @@ from tools.test_sharding.plan import (  # noqa: E402
     load_timings,
 )
 from tools.test_sharding.static_inventory import discover_inventory  # noqa: E402
+from test_live_model_benchmark_framework import (  # noqa: E402
+    UPSTREAM_MODULE_NAME,
+    _load_upstream,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +32,14 @@ WRAPPER_PREFIX = "test_live_model_benchmark_framework."
 
 
 class CiOfflineBenchmarkTests(unittest.TestCase):
+    def test_wrapper_loader_isolated_from_preloaded_standard_statistics(self) -> None:
+        sys.modules.pop(UPSTREAM_MODULE_NAME, None)
+        loaded = _load_upstream()
+
+        self.assertTrue(hasattr(loaded, "OmhBenchmarkFrameworkTests"))
+        self.assertTrue(hasattr(loaded, "OmhTargetedManifestAnalysisTests"))
+        self.assertIs(sys.modules["statistics"], statistics)
+
     def test_upstream_framework_runs_all_fifteen_tests_without_live_authority(self) -> None:
         environment = {
             key: value
