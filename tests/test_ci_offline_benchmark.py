@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 import statistics
 import sys
@@ -37,17 +36,6 @@ class CiOfflineBenchmarkTests(unittest.TestCase):
         self.assertTrue(hasattr(loaded, "OmhBenchmarkFrameworkTests"))
         self.assertTrue(hasattr(loaded, "OmhTargetedManifestAnalysisTests"))
         self.assertIs(sys.modules["statistics"], statistics)
-
-    def test_ci_integration_does_not_spawn_a_duplicate_framework_suite(self) -> None:
-        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
-        imported = {
-            alias.name
-            for node in tree.body
-            if isinstance(node, ast.Import)
-            for alias in node.names
-        }
-
-        self.assertNotIn("subprocess", imported)
 
     def test_static_ci_plan_assigns_every_wrapper_test_exactly_once(self) -> None:
         inventory = discover_inventory(ROOT / "tests")

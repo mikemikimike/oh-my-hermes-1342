@@ -28,9 +28,9 @@ def work_artifact_shape_sources(
 
     Reads only the payloads the copy manifest already reads: the coding
     briefing and the session's prepared handoffs. The handoff artifact prefers
-    the runtime handoff, the one prepared handoff whose schema the committed
-    shape facade can trace; a prompt handoff beside it is still projected with
-    its exact schema so the facade, not this module, reports it unsupported.
+    the runtime handoff when both exist; a prompt handoff beside it is still
+    projected with its exact schema and is traced through its own registered
+    shape projector.
     """
 
     prefix_session = session_id or str(briefing.get("session_id", ""))

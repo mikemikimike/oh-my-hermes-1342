@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
+from threading import Barrier, Lock
 import unittest
 from unittest.mock import patch
 
@@ -135,6 +137,65 @@ class PairedRunLocalFailureTests(unittest.TestCase):
                 all(item.cleanup_succeeded for item in report.receipts)
             )
             self.assertFalse(any(root.glob("repo-paired-run-*")))
+
+    def test_concurrent_invocations_reserve_distinct_owned_worktree_parents(
+        self,
+    ) -> None:
+        with TemporaryDirectory(prefix="omh-paired-ownership-") as raw:
+            root = Path(raw)
+            repo = root / "repo"
+            repo.mkdir()
+            revision = "a" * 40
+            decision = _decision(revision)
+            plan = _plan(decision)
+            paths = OmhPaths(root / ".omh", root / ".hermes")
+            barrier = Barrier(2)
+            observed: list[Path] = []
+            observed_lock = Lock()
+
+            def fail_after_both_reserved(
+                _repo: Path,
+                path: Path,
+                _revision: str,
+            ) -> int:
+                with observed_lock:
+                    observed.append(path)
+                barrier.wait(timeout=2)
+                return 1
+
+            with (
+                patch(
+                    "omh.coding.paired_run_local_worktrees._add_worktree",
+                    side_effect=fail_after_both_reserved,
+                ),
+                patch(
+                    "omh.coding.paired_run_local_worktrees._remove_worktree",
+                    return_value=0,
+                ),
+                ThreadPoolExecutor(max_workers=2) as pool,
+            ):
+                runs = [
+                    pool.submit(
+                        execute_local_paired_plan,
+                        plan,
+                        decision,
+                        {"task-a": "content"},
+                        PairedRunLocalRunnerConfig(paths, repo, "provider"),
+                    )
+                    for _index in range(2)
+                ]
+                for run in runs:
+                    run.result(timeout=5)
+
+            parents = {path.parent for path in observed}
+            self.assertEqual(len(observed), 4)
+            self.assertEqual(len(parents), 2)
+            self.assertTrue(
+                all(
+                    sum(path.parent == parent for path in observed) == 2
+                    for parent in parents
+                )
+            )
 
 
 if __name__ == "__main__":

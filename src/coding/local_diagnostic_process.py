@@ -200,8 +200,6 @@ def _revision_worktree(
             added = subprocess.run(
                 [
                     "git",
-                    "-C",
-                    str(workspace),
                     "worktree",
                     "add",
                     "--detach",
@@ -209,6 +207,7 @@ def _revision_worktree(
                     str(snapshot),
                     revision,
                 ],
+                cwd=workspace,
                 capture_output=True,
                 timeout=30,
             )
@@ -221,13 +220,12 @@ def _revision_worktree(
                 removed = subprocess.run(
                     [
                         "git",
-                        "-C",
-                        str(workspace),
                         "worktree",
                         "remove",
                         "--force",
                         str(snapshot),
                     ],
+                    cwd=workspace,
                     capture_output=True,
                     timeout=30,
                 )

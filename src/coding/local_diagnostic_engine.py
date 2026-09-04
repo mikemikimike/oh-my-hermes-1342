@@ -38,8 +38,6 @@ class GitChangedFileResolver:
         completed = subprocess.run(
             [
                 "git",
-                "-C",
-                workspace_id,
                 "diff",
                 "--name-only",
                 "-z",
@@ -48,6 +46,7 @@ class GitChangedFileResolver:
                 end_revision,
                 "--",
             ],
+            cwd=workspace_id,
             check=True,
             capture_output=True,
             timeout=30,
@@ -71,7 +70,8 @@ class GitRevisionReader:
 
     def read(self, workspace_id: str, revision: str) -> str:
         completed = subprocess.run(
-            ["git", "-C", workspace_id, "rev-parse", "--verify", f"{revision}^{{commit}}"],
+            ["git", "rev-parse", "--verify", f"{revision}^{{commit}}"],
+            cwd=workspace_id,
             check=True,
             capture_output=True,
             text=True,
@@ -84,12 +84,11 @@ class GitRevisionReader:
             status = subprocess.run(
                 [
                     "git",
-                    "-C",
-                    workspace_id,
                     "status",
                     "--porcelain",
                     "--untracked-files=normal",
                 ],
+                cwd=workspace_id,
                 check=True,
                 capture_output=True,
                 timeout=30,

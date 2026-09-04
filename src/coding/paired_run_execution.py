@@ -126,6 +126,14 @@ def _execute_cell(
         )
     except PairedRunRunnerFailure:
         outcome = PairedRunExecutionOutcome(ExecutionState.CRASHED, None, cell=cell)
+    except Exception:
+        # The injected runner is an external boundary. Classify its failure so
+        # this cell still reaches cleanup and sibling cells still terminate.
+        outcome = PairedRunExecutionOutcome(
+            ExecutionState.CRASHED,
+            None,
+            cell=cell,
+        )
     if not created:
         return cell, outcome
     if workspace is None:
@@ -133,6 +141,10 @@ def _execute_cell(
     try:
         cleaned = cleaner(cell, workspace)
     except PairedRunCleanupFailure:
+        cleaned = False
+    except Exception:
+        # Cleanup failures are terminal evidence, not permission to abort the
+        # matrix while other isolated cells are still running.
         cleaned = False
     if cleaned is not True:
         outcome = replace(outcome, state=ExecutionState.CLEANUP_FAILED, cleanup_succeeded=False)

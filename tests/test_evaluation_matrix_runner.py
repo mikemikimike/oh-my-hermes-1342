@@ -14,6 +14,17 @@ from tools.qa.orchestration_smoke_paired import adversarial_paired, happy_paired
 
 @requires_posix
 class EvaluationMatrixRunnerTests(unittest.TestCase):
+    def _assert_cleanup(self, cleanup: dict[str, object]) -> None:
+        self.assertEqual(
+            cleanup,
+            {
+                "live_workspaces": 0,
+                "unreaped_child_groups": 0,
+                "port_cleanup": "not_applicable_no_ports_created",
+                "live_temp_paths": 0,
+            },
+        )
+
     def test_serial_and_parallel_runs_preserve_scope_receipts_and_bounds(self) -> None:
         payload = happy_paired()
 
@@ -27,7 +38,7 @@ class EvaluationMatrixRunnerTests(unittest.TestCase):
         self.assertEqual(payload["parallel_peaks"]["local-variant"], 1)
         self.assertTrue(payload["serial_parallel_scope_equivalent"])
         self.assertEqual(payload["decision"], "baseline_dominates")
-        self.assertEqual(set(payload["cleanup"].values()), {0})
+        self._assert_cleanup(payload["cleanup"])
         for privacy in payload["filesystem_privacy"].values():
             self.assertTrue(privacy["persisted_prompt_absent"])
             self.assertTrue(privacy["persisted_secret_absent"])
@@ -51,7 +62,7 @@ class EvaluationMatrixRunnerTests(unittest.TestCase):
         self.assertTrue(required <= set(payload))
         self.assertTrue(all(str(payload[key]).startswith("BLOCK:") for key in required))
         self.assertEqual(payload["shared_resource_serialization"], "HOLD:serialized")
-        self.assertEqual(set(payload["cleanup"].values()), {0})
+        self._assert_cleanup(payload["cleanup"])
 
 
 if __name__ == "__main__":

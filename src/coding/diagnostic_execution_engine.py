@@ -7,25 +7,26 @@ from contextlib import nullcontext
 from subprocess import SubprocessError, TimeoutExpired
 from threading import Lock, Semaphore
 
-from ..quality.language_diagnostic_evidence import build_language_diagnostic_evidence
 from .diagnostic_execution_models import (
     CancellationSignal,
     ChangedFileResolver,
     DiagnosticExecutionRequest,
     DiagnosticExecutionResult,
     DiagnosticExecutionSettings,
-    ProviderDiagnosticResult,
     ProviderObservation,
     ProviderRunner,
     RevisionReader,
 )
+from .diagnostic_execution_result import (
+    DiagnosticResultContext,
+    build_provider_result,
+    in_scope_files,
+    overall_execution_status,
+)
 from .diagnostic_providers import (
     DIAGNOSTIC_PROVIDER_IDS,
-    DiagnosticCheckOutcome,
     DiagnosticProviderConfig,
-    DiagnosticProviderError,
     ProviderCapability,
-    build_diagnostic_check_outcome,
 )
 
 
@@ -66,13 +67,32 @@ class DiagnosticExecutionEngine:
         if self._cancelled():
             return DiagnosticExecutionResult("cancelled", ())
         execution_workspace = request.workspace_path or request.workspace_id
-        baseline = self.revisions.read(execution_workspace, request.baseline_revision)
-        end = self.revisions.read(execution_workspace, request.end_revision)
-        if request.workspace_path and self.settings.revalidate_workspace_head:
-            workspace_head = self.revisions.read(execution_workspace, "HEAD")
-            if workspace_head != end:
-                return DiagnosticExecutionResult("stale", ())
-        files = self.resolver.resolve(execution_workspace, baseline, end)
+        try:
+            baseline = self.revisions.read(
+                execution_workspace,
+                request.baseline_revision,
+            )
+            end = self.revisions.read(
+                execution_workspace,
+                request.end_revision,
+            )
+            if (
+                request.workspace_path
+                and self.settings.revalidate_workspace_head
+            ):
+                workspace_head = self.revisions.read(
+                    execution_workspace,
+                    "HEAD",
+                )
+                if workspace_head != end:
+                    return DiagnosticExecutionResult("stale", ())
+            files = self.resolver.resolve(
+                execution_workspace,
+                baseline,
+                end,
+            )
+        except (OSError, SubprocessError):
+            return DiagnosticExecutionResult("crashed", ())
         selected = self._selected(files)
         if not selected:
             return DiagnosticExecutionResult("unsupported", ())
@@ -90,19 +110,39 @@ class DiagnosticExecutionEngine:
                 for capability in selected
             ]
             pairs = [future.result() for future in futures]
-        final_end = self.revisions.read(execution_workspace, request.end_revision)
-        if request.workspace_path and self.settings.revalidate_workspace_head:
-            final_workspace_head = self.revisions.read(
+        try:
+            final_end = self.revisions.read(
                 execution_workspace,
-                "HEAD",
+                request.end_revision,
             )
-            if final_workspace_head != final_end:
-                final_end = final_workspace_head
+            if (
+                request.workspace_path
+                and self.settings.revalidate_workspace_head
+            ):
+                final_workspace_head = self.revisions.read(
+                    execution_workspace,
+                    "HEAD",
+                )
+                if final_workspace_head != final_end:
+                    final_end = final_workspace_head
+        except (OSError, SubprocessError):
+            return DiagnosticExecutionResult("crashed", ())
+        context = DiagnosticResultContext(
+            request,
+            files,
+            baseline,
+            end,
+            final_end,
+            self.config.config_identity(),
+        )
         results = tuple(
-            self._result(request, capability, files, pair, baseline, end, final_end)
+            build_provider_result(context, capability, pair)
             for capability, pair in zip(selected, pairs)
         )
-        return DiagnosticExecutionResult(_overall_status(results), results)
+        return DiagnosticExecutionResult(
+            overall_execution_status(results),
+            results,
+        )
 
     def _selected(self, files: tuple[str, ...]) -> tuple[ProviderCapability, ...]:
         by_id = {capability.provider_id: capability for capability in self.config.capabilities}
@@ -110,7 +150,9 @@ class DiagnosticExecutionEngine:
             capability for provider in DIAGNOSTIC_PROVIDER_IDS
             if (capability := by_id.get(provider)) is not None
             and capability.enabled
-            and 0 < len(_in_scope(files, capability)) <= capability.max_files_per_check
+            and 0
+            < len(in_scope_files(files, capability))
+            <= capability.max_files_per_check
         )
 
     def _observe_pair(
@@ -122,7 +164,7 @@ class DiagnosticExecutionEngine:
         end: str,
         execution_workspace: str,
     ) -> tuple[ProviderObservation, ProviderObservation]:
-        scope = _in_scope(files, capability)
+        scope = in_scope_files(files, capability)
         lock = self._stateful_locks.get(capability.provider_id)
         with lock if lock is not None else nullcontext():
             return (
@@ -160,125 +202,20 @@ class DiagnosticExecutionEngine:
             observed = ProviderObservation("timeout")
         except (OSError, SubprocessError):
             observed = ProviderObservation.crashed()
+        except BaseException as exc:
+            # Publish before re-raising: programming errors remain loud, but a
+            # same-key waiter must never block forever behind the failed owner.
+            with self._cache_lock:
+                active = self._inflight.pop(key, None)
+                if active is not None:
+                    active.set_exception(exc)
+            raise
         with self._cache_lock:
             self._cache[key] = observed
-            self._inflight.pop(key).set_result(observed)
+            active = self._inflight.pop(key, None)
+            if active is not None:
+                active.set_result(observed)
         return observed
-
-    def _result(
-        self,
-        request: DiagnosticExecutionRequest,
-        capability: ProviderCapability,
-        files: tuple[str, ...],
-        pair: tuple[ProviderObservation, ProviderObservation],
-        baseline_revision: str,
-        observed_end: str,
-        final_end: str,
-    ) -> ProviderDiagnosticResult:
-        baseline_observation, end_observation = pair
-        provider_files = _in_scope(files, capability)
-        invalid = False
-        try:
-            baseline = self._outcome(
-                capability,
-                request.workspace_id,
-                baseline_revision,
-                baseline_observation,
-                provider_files,
-            )
-            end = self._outcome(
-                capability,
-                request.workspace_id,
-                final_end,
-                end_observation,
-                provider_files,
-                observed_revision=observed_end,
-            )
-        except DiagnosticProviderError:
-            baseline, end, invalid = None, None, True
-        status = "crashed" if invalid else _status(baseline, end, baseline_observation, end_observation)
-        introduced, resolved = _deltas(baseline, end)
-        state = _evidence_state(status)
-        evidence = build_language_diagnostic_evidence(
-            owner=request.owner,
-            provider=capability.provider_id,
-            workspace_id=request.workspace_id,
-            baseline_revision=baseline_revision,
-            end_revision=final_end,
-            diagnostics_revision=end.diagnostics_revision if end else "",
-            check_state=state,
-            config_digest=self.config.config_identity(),
-            changed_paths=_in_scope(files, capability),
-            introduced=introduced,
-            resolved=resolved,
-        )
-        return ProviderDiagnosticResult(capability.provider_id, status, baseline, end, evidence)
-
-    def _outcome(
-        self,
-        capability: ProviderCapability,
-        workspace_id: str,
-        revision: str,
-        observation: ProviderObservation,
-        files: tuple[str, ...],
-        observed_revision: str | None = None,
-    ) -> DiagnosticCheckOutcome | None:
-        if observation.state == "unavailable":
-            return None
-        return build_diagnostic_check_outcome(
-            workspace_id=workspace_id,
-            revision=revision,
-            diagnostics_revision=revision if observed_revision is None else observed_revision,
-            provider_id=capability.provider_id,
-            terminal_state=observation.state,
-            compatibility="provider_selected",
-            in_scope_files=files,
-            diagnosed_files=observation.diagnosed_files,
-            diagnostics=observation.diagnostics,
-            config_identity=self.config.config_identity(),
-        )
 
     def _cancelled(self) -> bool:
         return self.cancellation.is_set() if self.cancellation is not None else False
-
-
-def _in_scope(files: tuple[str, ...], capability: ProviderCapability) -> tuple[str, ...]:
-    return tuple(path for path in files if path.endswith(capability.file_suffixes))
-
-
-def _status(
-    baseline: DiagnosticCheckOutcome | None,
-    end: DiagnosticCheckOutcome | None,
-    baseline_observation: ProviderObservation,
-    end_observation: ProviderObservation,
-) -> str:
-    if baseline_observation.state == "unavailable" or end_observation.state == "unavailable":
-        return "unavailable"
-    if baseline is not None and baseline.outcome != "ok":
-        return baseline.outcome
-    if end is not None:
-        return end.outcome
-    return "unavailable"
-
-
-def _deltas(
-    baseline: DiagnosticCheckOutcome | None, end: DiagnosticCheckOutcome | None
-) -> tuple[tuple[dict[str, object], ...], tuple[dict[str, object], ...]]:
-    before = {tuple(item.as_record().items()): item.as_record() for item in baseline.diagnostics} if baseline else {}
-    after = {tuple(item.as_record().items()): item.as_record() for item in end.diagnostics} if end else {}
-    return tuple(after[key] for key in sorted(set(after) - set(before))), tuple(before[key] for key in sorted(set(before) - set(after)))
-
-
-def _evidence_state(status: str) -> str:
-    if status in ("ok", "stale"):
-        return "observed"
-    if status in ("timeout", "crashed"):
-        return "failed"
-    if status == "unsupported":
-        return "unsupported"
-    return "not_observed"
-
-
-def _overall_status(results: tuple[ProviderDiagnosticResult, ...]) -> str:
-    statuses = {result.status for result in results}
-    return statuses.pop() if len(statuses) == 1 else "partial"

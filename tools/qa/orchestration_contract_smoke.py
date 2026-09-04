@@ -12,6 +12,14 @@ from orchestration_smoke_paired import adversarial_paired, happy_paired
 from orchestration_smoke_quality import adversarial_diagnostic, adversarial_review, happy_diagnostic, happy_review
 
 
+_EXPECTED_CLEANUP = {
+    "live_workspaces": 0,
+    "unreaped_child_groups": 0,
+    "port_cleanup": "not_applicable_no_ports_created",
+    "live_temp_paths": 0,
+}
+
+
 def _tree_stamp() -> str:
     root = Path(__file__).resolve().parents[2]
     completed = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=root, text=True, capture_output=True, check=False, timeout=10)
@@ -96,7 +104,7 @@ def _happy_paired_ok(paired: object) -> bool:
 def _errors(payload: dict[str, object]) -> list[str]:
     errors: list[str] = []
     cleanup = payload.get("cleanup")
-    if not isinstance(cleanup, dict) or any(value != 0 for value in cleanup.values()):
+    if cleanup != _EXPECTED_CLEANUP:
         errors.append("cleanup evidence is incomplete")
     if payload.get("frozen_tree_stamp") == "unavailable":
         errors.append("git tree stamp is unavailable")

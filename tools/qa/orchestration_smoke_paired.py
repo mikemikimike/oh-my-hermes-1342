@@ -46,11 +46,14 @@ def _plan(global_limit: int, *, shared: str | None = None):
     return plan_paired_run_dispatch(build_paired_run_decision(initial).to_json(), config)
 
 
-def _event(cell, executable: Path) -> HermesChildObservation:
+def _event(
+    cell,
+    executable: Path,
+) -> tuple[HermesChildObservation, bool]:
     context = HermesChildEvaluationContext(cell.task_id, f"criterion-{cell.task_id[-1]}", cell.input_digest, cell.arm.value, cell.executor, exposure_digest(() if cell.arm is ArmRole.BASELINE else ("qa-skill",)), cell.execution_revision)
     events: list[HermesChildObservation] = []
-    dispatch_hermes_child(HermesChildRequest("orchestration-qa", cell.model, "local", "low", "qa-parent", f"receipt-{cell.workspace_id}", 30, hermes=str(executable), evaluation_context=context), dispatch_policy="ask_before_dispatch", confirmed=True, observe=events.append)
-    return events[-1]
+    result = dispatch_hermes_child(HermesChildRequest("orchestration-qa", cell.model, "local", "low", "qa-parent", f"receipt-{cell.workspace_id}", 30, hermes=str(executable), evaluation_context=context), dispatch_policy="ask_before_dispatch", confirmed=True, observe=events.append)
+    return events[-1], not result.cleanup_verified
 
 
 def _receipt(home: Path, cell, event: HermesChildObservation):
@@ -67,7 +70,18 @@ def _execute(home: Path, global_limit: int):
     executable = home.parent / "local-hermes"
     executable.write_text("#!/bin/sh\ncat >/dev/null\nexit 0\n", encoding="utf-8")
     executable.chmod(0o700)
-    events = {cell.workspace_id: _event(cell, executable) for cell in plan.cells}
+    observations = {
+        cell.workspace_id: _event(cell, executable)
+        for cell in plan.cells
+    }
+    events = {
+        workspace_id: observation
+        for workspace_id, (observation, _unreaped) in observations.items()
+    }
+    unreaped_child_groups = sum(
+        int(unreaped)
+        for _observation, unreaped in observations.values()
+    )
     hermes_child_run_dir(home, "bootstrap", create_root=True)
     load_or_create_observation_key(home / "coding" / "hermes-child")
     workspace_root = home.parent / "workspaces"
@@ -107,7 +121,7 @@ def _execute(home: Path, global_limit: int):
     report = execute_paired_run_plan(plan, workspace_factory=workspace, runner=runner, cleaner=cleaner, limits=limits)
     workspace_root.rmdir()
     results = tuple(RunResultInput(item.cell.task_id, item.cell.arm, InfrastructureStatus.OBSERVED, BehaviorVerdict.PASS if item.cell.arm is ArmRole.BASELINE else BehaviorVerdict.FAIL, item.receipt) for item in report.receipts if item.cell is not None)
-    return report, _request(results), peaks, active
+    return report, _request(results), peaks, active, unreaped_child_groups
 
 
 def _scope(report, decision) -> tuple[object, ...]:
@@ -119,19 +133,27 @@ def happy_paired() -> dict[str, object]:
     serial_root: Path | None = None
     with TemporaryDirectory(prefix="omh-orchestration-serial-") as raw:
         serial_root = Path(raw)
-        serial_report, serial_request, serial_peaks, serial_active = _execute((serial_root / ".omh").resolve(), 1)
+        serial_report, serial_request, serial_peaks, serial_active, serial_unreaped = _execute((serial_root / ".omh").resolve(), 1)
         serial_decision = build_paired_run_execution_decision(serial_request, serial_report, (serial_root / ".omh").resolve())
         serial_privacy = _privacy(serial_root)
     parallel_root: Path | None = None
     with TemporaryDirectory(prefix="omh-orchestration-parallel-") as raw:
         parallel_root = Path(raw)
         home = (parallel_root / ".omh").resolve()
-        parallel_report, parallel_request, parallel_peaks, parallel_active = _execute(home, 2)
+        parallel_report, parallel_request, parallel_peaks, parallel_active, parallel_unreaped = _execute(home, 2)
         parallel_decision = build_paired_run_execution_decision(parallel_request, parallel_report, home)
         refs = [item.receipt.receipt_ref for item in parallel_report.receipts if item.receipt is not None]
         identities = [{"workspace": cell.workspace_id, "task": cell.task_id, "input": cell.input_digest, "revision": cell.execution_revision, "executor": cell.executor, "model": cell.model} for cell in parallel_report.plan.cells]
         parallel_privacy = _privacy(parallel_root)
-    cleanup = {"live_workspaces": len(serial_active | parallel_active), "live_child_processes": 0, "live_ports": 0, "live_temp_paths": int((serial_root is not None and serial_root.exists()) or (parallel_root is not None and parallel_root.exists()))}
+    cleanup = {
+        "live_workspaces": len(serial_active | parallel_active),
+        "unreaped_child_groups": serial_unreaped + parallel_unreaped,
+        "port_cleanup": "not_applicable_no_ports_created",
+        "live_temp_paths": int(
+            (serial_root is not None and serial_root.exists())
+            or (parallel_root is not None and parallel_root.exists())
+        ),
+    }
     return {"cell_count": len(refs), "receipt_count": len(refs), "receipt_refs": refs, "identities": identities, "serial_peaks": serial_peaks, "parallel_peaks": parallel_peaks, "serial_parallel_scope_equivalent": _scope(serial_report, serial_decision) == _scope(parallel_report, parallel_decision), "decision": parallel_decision.outcome, "filesystem_privacy": {"serial": serial_privacy, "parallel": parallel_privacy}, "cleanup": cleanup, "claim_boundary": parallel_decision.claim_boundary}
 
 
@@ -141,7 +163,7 @@ def adversarial_paired() -> dict[str, object]:
     with TemporaryDirectory(prefix="omh-orchestration-adversarial-") as raw:
         root = Path(raw)
         home = (root / ".omh").resolve()
-        report, request, _, active = _execute(home, 2)
+        report, request, _, active, unreaped_child_groups = _execute(home, 2)
         first, cell = report.receipts[0], report.plan.cells[0]
         cases = {"missing": replace(report, receipts=report.receipts[1:]), "stale": replace(report, receipts=(replace(first, cell=replace(cell, model="stale")), *report.receipts[1:])), "mismatched": replace(report, receipts=(replace(first, receipt=report.receipts[1].receipt), *report.receipts[1:])), "unauthenticated": replace(report, receipts=(replace(first, authenticated=False), *report.receipts[1:])), "partial": replace(report, receipts=(replace(first, state=ExecutionState.PARTIAL), *report.receipts[1:])), "timeout": replace(report, receipts=(replace(first, state=ExecutionState.TIMED_OUT), *report.receipts[1:])), "cancel": replace(report, receipts=(replace(first, state=ExecutionState.CANCELLED), *report.receipts[1:])), "crash": replace(report, receipts=(replace(first, state=ExecutionState.CRASHED), *report.receipts[1:])), "rate_limit": replace(report, receipts=(replace(first, state=ExecutionState.RATE_LIMITED), *report.receipts[1:])), "cleanup_failure": replace(report, receipts=(replace(first, cleanup_succeeded=False), *report.receipts[1:]))}
         result: dict[str, object] = {}
@@ -153,5 +175,10 @@ def adversarial_paired() -> dict[str, object]:
         shared = _plan(2, shared="shared")
         result["shared_resource_serialization"] = "HOLD:serialized" if len({item.launch_wave for item in shared.cells}) == len(shared.cells) else "BLOCK:not_serialized"
         result["filesystem_privacy"] = _privacy(root)
-    result["cleanup"] = {"live_workspaces": len(active), "live_child_processes": 0, "live_ports": 0, "live_temp_paths": int(root is not None and root.exists())}
+    result["cleanup"] = {
+        "live_workspaces": len(active),
+        "unreaped_child_groups": unreaped_child_groups,
+        "port_cleanup": "not_applicable_no_ports_created",
+        "live_temp_paths": int(root is not None and root.exists()),
+    }
     return result

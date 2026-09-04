@@ -142,9 +142,27 @@ PROCESS_SPAWN_ALLOWLIST: dict[str, str] = {
         "documented as the scoped exception in CLAUDE.md."
     ),
     "src/coding/diagnostic_execution_engine.py": (
-        "`omh coding fanout dispatch --diagnostics` with an injected execution engine; imports "
-        "only subprocess exception classes to classify an injected runner's bounded failure and "
-        "contains no process-spawn call of its own."
+        "`omh coding fanout dispatch --diagnostics`; imports only subprocess exception classes "
+        "to classify an injected or built-in runner's bounded failure and contains no "
+        "process-spawn call of its own."
+    ),
+    "src/coding/local_diagnostic_engine.py": (
+        "repository-owned adapter reached only after explicit `omh coding fanout dispatch "
+        "--diagnostics`; runs bounded local read-only Git revision/status/diff probes before "
+        "the allowlisted provider bridge and starts no executor or network client."
+    ),
+    "src/coding/local_diagnostic_process.py": (
+        "provider bridge reached only after explicit `omh coding fanout dispatch --diagnostics`; "
+        "materializes/removes detached fixed-revision worktrees and starts only the closed local "
+        "pyright/basedpyright/ruff command map with bounded output, time, and environment."
+    ),
+    "src/coding/final_review_worktree.py": (
+        "explicit `omh coding fanout dispatch --final-review`; creates/removes disposable "
+        "detached review worktrees and runs only bounded local Git identity/status probes."
+    ),
+    "src/coding/final_review_local_engine.py": (
+        "explicit `omh coding fanout dispatch --final-review`; imports only SubprocessError to "
+        "classify failures from the disposable worktree boundary and spawns no process itself."
     ),
     "src/coding/paired_run_local_worktrees.py": (
         "`omh coding paired-run dispatch --confirm-dispatch`; imports only SubprocessError to "
@@ -591,6 +609,46 @@ GIT_ARGV_ALLOWLIST: dict[tuple[str, tuple[str, ...]], str] = {
     ("src/coding/paired_run_local_worktrees.py", ("worktree", "remove")): (
         "removes only the detached local worktree this paired-run invocation created after the "
         "cell reaches a terminal state; touches no remote"
+    ),
+    ("src/coding/local_diagnostic_engine.py", ("diff",)): (
+        "`git diff --name-only -z` derives the bounded changed-file set between two already-fixed "
+        "diagnostic revisions; read-only, local-only, and names no remote"
+    ),
+    ("src/coding/local_diagnostic_engine.py", ("rev-parse",)): (
+        "`git rev-parse --verify <revision>^{commit}` resolves only the fixed baseline/end/HEAD "
+        "identity used by the explicit diagnostic adapter; read-only and local-only"
+    ),
+    ("src/coding/local_diagnostic_engine.py", ("status",)): (
+        "`git status --porcelain --untracked-files=normal` refuses a dirty diagnostic execution "
+        "workspace instead of claiming fresh evidence; read-only and local-only"
+    ),
+    ("src/coding/local_diagnostic_process.py", ("worktree", "add")): (
+        "creates one disposable detached checkout of a fixed diagnostic revision under the "
+        "explicit `--diagnostics` boundary; local-only and names no remote"
+    ),
+    ("src/coding/local_diagnostic_process.py", ("worktree", "remove")): (
+        "removes only the disposable diagnostic checkout created by the same provider call; "
+        "local-only and names no remote"
+    ),
+    ("src/coding/final_review_worktree.py", ("rev-parse", "HEAD^{tree}")): (
+        "reads the integrated and isolated checkout tree identities so final-review lanes cannot "
+        "accept a moved revision; read-only and local-only"
+    ),
+    ("src/coding/final_review_worktree.py", ("rev-parse", "HEAD")): (
+        "reads the integrated checkout commit used to create the disposable review worktree after "
+        "its tree identity matches; read-only and local-only"
+    ),
+    ("src/coding/final_review_worktree.py", ("worktree", "add")): (
+        "creates one disposable detached checkout for an explicitly requested review lens at the "
+        "already-verified integrated commit; local-only and names no remote"
+    ),
+    ("src/coding/final_review_worktree.py", ("worktree", "remove")): (
+        "removes only the disposable review checkout created by the same lens after permissions "
+        "are restored; local-only and names no remote"
+    ),
+    ("src/coding/final_review_worktree.py", ("status",)): (
+        "`git --no-optional-locks status --porcelain=v1 --untracked-files=all` verifies the "
+        "disposable review checkout stayed unmodified before any verdict is accepted; read-only"
     ),
     ("src/commands/coding.py", ("rev-parse",)): (
         "resolves --base-ref to a commit sha inside `coding fanout dispatch`; read-only"

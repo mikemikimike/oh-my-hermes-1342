@@ -132,26 +132,57 @@ class PairedRunExecutionTests(unittest.TestCase):
         )
         self.assertEqual({item.state for item in crashed.receipts}, {ExecutionState.CRASHED})
 
-    def test_unexpected_runner_error_propagates(self) -> None:
+    def test_unexpected_runner_error_is_crashed_and_cleaned(self) -> None:
+        cleaned: list[str] = []
+
         def runner_bug(cell, workspace):
             raise AssertionError("runner bug")
 
-        with self.assertRaisesRegex(AssertionError, "runner bug"):
-            execute_paired_run_plan(
-                _plan(), workspace_factory=_workspace,
-                runner=runner_bug, cleaner=lambda cell, workspace: True,
-            )
+        report = execute_paired_run_plan(
+            _plan(),
+            workspace_factory=_workspace,
+            runner=runner_bug,
+            cleaner=lambda cell, workspace: (
+                cleaned.append(workspace.workspace_id) or True
+            ),
+        )
 
-    def test_unexpected_cleaner_error_propagates(self) -> None:
+        self.assertEqual(
+            {item.state for item in report.receipts},
+            {ExecutionState.CRASHED},
+        )
+        self.assertTrue(
+            all(item.cleanup_succeeded for item in report.receipts)
+        )
+        self.assertEqual(
+            set(cleaned),
+            {cell.workspace_id for cell in report.plan.cells},
+        )
+
+    def test_unexpected_cleaner_error_is_cleanup_failed(self) -> None:
         def cleaner_bug(cell, workspace):
             raise AssertionError("cleaner bug")
 
-        with self.assertRaisesRegex(AssertionError, "cleaner bug"):
-            execute_paired_run_plan(
-                _plan(), workspace_factory=_workspace,
-                runner=lambda cell, workspace: PairedRunExecutionOutcome(
-                    ExecutionState.PARTIAL, None), cleaner=cleaner_bug,
+        report = execute_paired_run_plan(
+            _plan(),
+            workspace_factory=_workspace,
+            runner=lambda cell, workspace: PairedRunExecutionOutcome(
+                ExecutionState.PARTIAL,
+                None,
+            ),
+            cleaner=cleaner_bug,
+        )
+
+        self.assertEqual(
+            {item.state for item in report.receipts},
+            {ExecutionState.CLEANUP_FAILED},
+        )
+        self.assertTrue(
+            all(
+                item.cleanup_succeeded is False
+                for item in report.receipts
             )
+        )
 
     def test_authenticated_matching_terminal_receipts_resume_once_and_mismatches_rerun(self) -> None:
         plan = _plan()

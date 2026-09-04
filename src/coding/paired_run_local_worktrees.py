@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 from subprocess import SubprocessError
+from tempfile import mkdtemp
 from threading import Lock
 
 from ..quality.paired_run_model import PairedRunDecision
@@ -34,7 +35,14 @@ def execute_local_paired_plan(
 ) -> PairedRunExecutionReport:
     """Execute each frozen cell from a distinct detached checkout."""
     worktrees: dict[str, Path] = {}
+    reserved_paths: set[Path] = set()
     worktree_lock = Lock()
+    invocation_root = Path(
+        mkdtemp(
+            prefix="omh-paired-run-",
+            dir=config.repo_root.parent,
+        )
+    )
     health = FanoutHealthEvents(
         fanout_id=plan.decision_id,
         revision=decision.execution_revision,
@@ -56,28 +64,45 @@ def execute_local_paired_plan(
         )
 
     def workspace_factory(cell: PairedRunDispatchCell) -> PairedRunWorkspace:
-        path = (
-            config.repo_root.parent
-            / f"{config.repo_root.name}-{cell.workspace_id}"
-        )
+        path = invocation_root / cell.workspace_id
         health.started(cell.workspace_id)
-        if path.exists():
-            health.finished(cell.workspace_id, terminal_status="failed")
-            raise PairedRunWorkspaceFailure("paired-run worktree already exists")
+        with worktree_lock:
+            if path in reserved_paths or path.exists():
+                health.finished(cell.workspace_id, terminal_status="failed")
+                raise PairedRunWorkspaceFailure(
+                    "paired-run worktree reservation collision"
+                )
+            reserved_paths.add(path)
         try:
             added = _add_worktree(
                 config.repo_root, path, cell.execution_revision
             )
         except (OSError, SubprocessError) as exc:
             health.finished(cell.workspace_id, terminal_status="failed")
-            cleaned = _cleanup_path(health, cell, config.repo_root, path)
+            cleaned = _cleanup_owned_path(
+                health,
+                cell,
+                config.repo_root,
+                path,
+                invocation_root,
+                reserved_paths,
+                worktree_lock,
+            )
             raise PairedRunWorkspaceFailure(
                 "paired-run worktree creation failed",
                 cleanup_succeeded=cleaned,
             ) from exc
         if added != 0:
             health.finished(cell.workspace_id, terminal_status="failed")
-            cleaned = _cleanup_path(health, cell, config.repo_root, path)
+            cleaned = _cleanup_owned_path(
+                health,
+                cell,
+                config.repo_root,
+                path,
+                invocation_root,
+                reserved_paths,
+                worktree_lock,
+            )
             raise PairedRunWorkspaceFailure(
                 "paired-run worktree creation failed",
                 cleanup_succeeded=cleaned,
@@ -120,14 +145,30 @@ def execute_local_paired_plan(
             path = worktrees.pop(workspace.workspace_id, None)
         if path is None or workspace.workspace_id != cell.workspace_id:
             raise PairedRunCleanupFailure("paired-run workspace identity mismatch")
-        return _cleanup_path(health, cell, config.repo_root, path)
+        return _cleanup_owned_path(
+            health,
+            cell,
+            config.repo_root,
+            path,
+            invocation_root,
+            reserved_paths,
+            worktree_lock,
+        )
 
-    return execute_paired_run_plan(
+    report = execute_paired_run_plan(
         plan,
         workspace_factory=workspace_factory,
         runner=runner,
         cleaner=cleaner,
     )
+    if all(item.cleanup_succeeded is not False for item in report.receipts):
+        try:
+            invocation_root.rmdir()
+        except OSError as exc:
+            raise PairedRunCleanupFailure(
+                "paired-run invocation root cleanup failed"
+            ) from exc
+    return report
 
 
 def _add_worktree(repo: Path, path: Path, revision: str) -> int:
@@ -166,15 +207,37 @@ def _cleanup_path(
     )
     health.started(cleanup_id, phase="cleanup")
     try:
-        removed = _remove_worktree(repo, path)
+        _removed = _remove_worktree(repo, path)
     except (OSError, SubprocessError):
-        removed = -1
-    cleaned = (removed == 0 or not path.exists()) and not path.exists()
+        _removed = -1
+    cleaned = not path.exists()
     health.finished(
         cleanup_id,
         terminal_status="succeeded" if cleaned else "failed",
         phase="cleanup",
     )
+    return cleaned
+
+
+def _cleanup_owned_path(
+    health: FanoutHealthEvents,
+    cell: PairedRunDispatchCell,
+    repo: Path,
+    path: Path,
+    invocation_root: Path,
+    reserved_paths: set[Path],
+    worktree_lock: Lock,
+) -> bool:
+    with worktree_lock:
+        owned = path.parent == invocation_root and path in reserved_paths
+    if not owned:
+        raise PairedRunCleanupFailure(
+            "paired-run cleanup refused a worktree this invocation did not own"
+        )
+    cleaned = _cleanup_path(health, cell, repo, path)
+    if cleaned:
+        with worktree_lock:
+            reserved_paths.discard(path)
     return cleaned
 
 

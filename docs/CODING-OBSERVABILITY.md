@@ -334,9 +334,11 @@ caller-supplied engine remains the executor-neutral extension seam. If none of
 the built-in commands is available, the diagnostic result is explicitly
 `unsupported`/`held` rather than silently clean.
 
-For each selected provider, OMH derives at most 200 changed paths from Git,
-materializes each fixed revision in a detached temporary worktree, and runs
-only the provider's fixed argv template. Global concurrency is two and
+For each selected provider, OMH retains at most 201 changed paths from Git:
+the extra sentinel path makes an over-200 scope explicitly unsupported instead
+of silently truncating it, and no provider receives more than its 200-file
+bound. OMH materializes each fixed revision in a detached temporary worktree
+and runs only the provider's fixed argv template. Global concurrency is two and
 per-provider concurrency is one; the pyright-family providers are marked
 stateful and serialized across overlapping requests. Each process has the
 provider timeout, a process-group cancellation path, an allowlisted
@@ -556,8 +558,13 @@ omh coding fanout dispatch <fanout-id> --goal-file goal.txt \
   --hermes-provider <provider> --hermes-model <model>
 ```
 
-The built-in adapter reuses four sanctioned Hermes children, one per lens, in
-the clean integrated checkout. Only an exact `<verdict>PASS</verdict>` or
+The built-in adapter reuses four sanctioned Hermes children, one per lens.
+Each child receives its own detached checkout whose commit/tree is rechecked
+against the integrated revision, whose filesystem write bits are removed
+before spawn, and whose path is removed in `finally`. A child that bypasses
+the write denial still touches only its disposable checkout, and any resulting
+Git change blocks that exact lane before cleanup; the integrated checkout is
+never its working directory. Only an exact `<verdict>PASS</verdict>` or
 `<verdict>FAIL</verdict>` response is interpreted; missing or malformed output
 blocks the lane. Without `--final-review`, the existing dispatch result is
 unchanged, and caller-injected engines remain the extension seam.
@@ -584,10 +591,13 @@ already-sanctioned Hermes-child process boundary; it is not a third subprocess
 path. Each `--task-file TASK_ID=PATH` is read through the bounded no-follow
 reader, checked against the decision's input digest, held only in memory, and
 delivered to the child over stdin. `--repo` must resolve the decision's exact
-40-hex execution commit, and each cell starts from a distinct detached
-worktree that is removed after its terminal result. Independent cells run with
-a derived global/executor/provider ceiling of two; a shared-resource key still
-serializes only the cells that name it. The Hermes-child bridge's normal
+40-hex execution commit, and each invocation atomically reserves a unique
+parent before any cell starts. Every cell worktree lives under that parent;
+cleanup refuses any path the invocation did not reserve, so two concurrent
+dispatches of the same decision cannot remove each other's workspace.
+Independent cells run with a derived global/executor/provider ceiling of two;
+a shared-resource key still serializes only the cells that name it. The
+Hermes-child bridge's normal
 single-dispatch guard remains the default for every other caller, while this
 confirmed matrix path opts into the paired-run scheduler's own bounded guard.
 

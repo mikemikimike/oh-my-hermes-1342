@@ -6,6 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 import re
+from subprocess import SubprocessError
+from threading import Lock
 
 from .final_review_wave import (
     LANE_ORDER,
@@ -30,6 +32,11 @@ from .hermes_child_dispatch import (
     HermesChildDispatchError,
     HermesChildRequest,
     dispatch_hermes_child,
+)
+from .final_review_worktree import (
+    FinalReviewWorktreeError,
+    final_review_worktree_matches,
+    isolated_final_review_worktree,
 )
 
 
@@ -79,6 +86,7 @@ class HermesFinalReviewEngine:
 
     def __init__(self, config: FinalReviewLocalEngineConfig) -> None:
         self._config = config
+        self._git_lock = Lock()
 
     def execute(
         self,
@@ -124,37 +132,50 @@ class HermesFinalReviewEngine:
         if revision is None:
             return LaneExecutionResult(LaneState.MISSING, None)
         try:
-            result = dispatch_hermes_child(
-                HermesChildRequest(
-                    prompt=_review_prompt(
-                        self._config.goal_text,
-                        revision.value,
-                        lane.lens.value,
+            with isolated_final_review_worktree(
+                self._config.worktree,
+                revision.value,
+                self._git_lock,
+            ) as review_worktree:
+                result = dispatch_hermes_child(
+                    HermesChildRequest(
+                        prompt=_review_prompt(
+                            self._config.goal_text,
+                            revision.value,
+                            lane.lens.value,
+                        ),
+                        model=self._config.model,
+                        provider=self._config.provider,
+                        reasoning=self._config.reasoning,
+                        parent_run_id=f"final-review-{revision.value[:16]}",
+                        run_id=(
+                            f"final-review-{revision.value[:12]}-"
+                            f"{lane.lens.value}"
+                        ),
+                        timeout_seconds=self._config.timeout_seconds,
+                        hermes=self._config.hermes,
+                        cwd=review_worktree,
+                        allow_parallel=True,
                     ),
-                    model=self._config.model,
-                    provider=self._config.provider,
-                    reasoning=self._config.reasoning,
-                    parent_run_id=f"final-review-{revision.value[:16]}",
-                    run_id=(
-                        f"final-review-{revision.value[:12]}-"
-                        f"{lane.lens.value}"
-                    ),
-                    timeout_seconds=self._config.timeout_seconds,
-                    hermes=self._config.hermes,
-                    cwd=self._config.worktree,
-                    allow_parallel=True,
-                ),
-                dispatch_policy="ask_before_dispatch",
-                confirmed=True,
-            )
+                    dispatch_policy="ask_before_dispatch",
+                    confirmed=True,
+                )
+                unchanged = final_review_worktree_matches(
+                    review_worktree,
+                    revision.value,
+                )
         except (
             DispatchConfirmationError,
             DispatchRecursionError,
             HermesChildDispatchError,
+            FinalReviewWorktreeError,
             OSError,
+            SubprocessError,
             ValueError,
         ):
             return LaneExecutionResult(LaneState.FAILED, revision)
+        if not unchanged:
+            return LaneExecutionResult(LaneState.BLOCKED, revision)
         return LaneExecutionResult(
             _lane_state(result.status, result.stdout),
             revision,
