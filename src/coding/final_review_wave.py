@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+from . import final_review_execution as _execution
+from . import final_review_execution_models as _execution_models
+from .final_review_status import human_lane_status
 from .final_review_wave_models import (
     LANE_ORDER,
     ImmutableRevision,
@@ -27,6 +30,7 @@ _BLOCKING_STATES: frozenset[LaneState] = frozenset(
         LaneState.STALE,
         LaneState.FAILED,
         LaneState.TIMED_OUT,
+        LaneState.CANCELLED,
     }
 )
 
@@ -122,7 +126,9 @@ class FinalReviewWave:
         return WaveStatusProjection(
             self.assess(),
             tuple(
-                LaneStatusProjection(lane.lens, lane.state, _execution_status(lane.state))
+                LaneStatusProjection(
+                    lane.lens, lane.state, _execution_status(lane.state), human_lane_status(lane.state)
+                )
                 for lane in self.lanes
             ),
         )
@@ -161,3 +167,11 @@ def prepare_remediated_wave(
 
 def _execution_status(state: LaneState) -> str:
     return "prepared_not_executed" if state is LaneState.PREPARED else state.value
+
+
+execute_final_review_wave = _execution.execute_final_review_wave
+FinalReviewExecutionReservations = _execution_models.FinalReviewExecutionReservations
+GlobalReviewReservation = _execution_models.GlobalReviewReservation
+LaneExecutionResult = _execution_models.LaneExecutionResult
+ProviderReviewReservation = _execution_models.ProviderReviewReservation
+ReviewReservation = _execution_models.ReviewReservation

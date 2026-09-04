@@ -22,6 +22,7 @@ class LaneState(str, Enum):
     STALE = "stale"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
 
 
 class WaveVerdict(str, Enum):
@@ -113,6 +114,7 @@ class LaneStatusProjection:
     lens: ReviewLens
     state: LaneState
     execution_status: str
+    status: str = "required"
 
 
 @dataclass(frozen=True, slots=True)
