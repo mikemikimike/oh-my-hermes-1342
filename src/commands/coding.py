@@ -8,6 +8,12 @@ from pathlib import Path
 
 from ..coding_delegation import CODING_EXECUTOR_TARGETS, build_coding_delegation_payload, coding_delegation_record_payload
 from ..coding.diagnostic_execution import DiagnosticExecutionEngine
+from ..coding.fanout_final_review_hook import FinalReviewWaveEngine
+from ..coding.final_review_local_engine import (
+    FinalReviewLocalEngineConfig,
+    FinalReviewLocalEngineError,
+    HermesFinalReviewEngine,
+)
 from ..coding.executor_capability_snapshots import (
     ExecutorCapabilitySnapshotError,
     build_executor_capability_snapshot,
@@ -2064,6 +2070,7 @@ def cmd_coding_fanout_dispatch(
     args: argparse.Namespace,
     *,
     diagnostic_engine: DiagnosticExecutionEngine | None = None,
+    final_review_engine: FinalReviewWaveEngine | None = None,
 ) -> int:
     import subprocess as _subprocess
 
@@ -2114,6 +2121,28 @@ def cmd_coding_fanout_dispatch(
     integrated_worktree = (
         Path(args.integration_worktree).expanduser().resolve() if args.integration_worktree else None
     )
+    selected_final_review_engine = (
+        final_review_engine if getattr(args, "final_review", False) else None
+    )
+    if getattr(args, "final_review", False) and selected_final_review_engine is None:
+        if integrated_worktree is None or not args.integration_revision:
+            raise OmhError(
+                "--final-review requires --integration-worktree and "
+                "--integration-revision"
+            )
+        try:
+            selected_final_review_engine = HermesFinalReviewEngine(
+                FinalReviewLocalEngineConfig(
+                    worktree=integrated_worktree,
+                    goal_text=goal_text,
+                    provider=str(args.hermes_provider),
+                    model=str(args.hermes_model),
+                    reasoning=str(args.hermes_reasoning or "medium"),
+                    timeout_seconds=min(float(args.timeout), 900.0),
+                )
+            )
+        except FinalReviewLocalEngineError as exc:
+            raise OmhError(str(exc)) from exc
     repo_root = Path(args.repo_root).expanduser().resolve()
     try:
         preflight = fanout_dispatch_preflight(
@@ -2149,6 +2178,7 @@ def cmd_coding_fanout_dispatch(
             goal_attempt_progressed=bool(args.goal_attempt_progressed),
             review_dispatch_budget=args.review_dispatch_budget,
             diagnostic_engine=selected_diagnostic_engine,
+            final_review_engine=selected_final_review_engine,
             emit_health_events=bool(args.health_events),
             **recovery_kwargs,
         )
@@ -2192,6 +2222,7 @@ def cmd_coding_fanout_dispatch(
             goal_attempt_progressed=bool(args.goal_attempt_progressed),
             review_dispatch_budget=args.review_dispatch_budget,
             diagnostic_engine=selected_diagnostic_engine,
+            final_review_engine=selected_final_review_engine,
             emit_health_events=bool(args.health_events),
             **recovery_kwargs,
         )
@@ -2608,9 +2639,9 @@ def _add_failure_recovery_arguments(parser) -> None:
             "the unit's owner, re-observing the provider's answer directly."
         ),
     )
-    parser.add_argument("--hermes-model", default="", help="Hermes model alias for the Hermes-subagent recovery lane.")
-    parser.add_argument("--hermes-provider", default="", help="Hermes provider alias for the Hermes-subagent recovery lane.")
-    parser.add_argument("--hermes-reasoning", default="", help="Hermes reasoning alias for the Hermes-subagent recovery lane.")
+    parser.add_argument("--hermes-model", default="", help="Hermes model alias for recovery or final-review lanes.")
+    parser.add_argument("--hermes-provider", default="", help="Hermes provider alias for recovery or final-review lanes.")
+    parser.add_argument("--hermes-reasoning", default="", help="Hermes reasoning alias for recovery or final-review lanes.")
 
 
 def _add_coding_commands(sub) -> None:
@@ -2703,6 +2734,14 @@ def _add_coding_commands(sub) -> None:
         help="Disable the optional post-GREEN diagnostic hook (the default).",
     )
     fanout_dispatch.set_defaults(diagnostics=False)
+    fanout_dispatch.add_argument(
+        "--final-review",
+        action="store_true",
+        help=(
+            "Run four immutable read-only Hermes review lenses after "
+            "integration GREEN."
+        ),
+    )
     health_events = fanout_dispatch.add_mutually_exclusive_group()
     health_events.add_argument(
         "--health-events",

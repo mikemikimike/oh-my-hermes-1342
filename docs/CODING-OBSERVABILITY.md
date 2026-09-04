@@ -531,10 +531,24 @@ The verdict is derived from lane states in lens order, so the blocking lens is
 named rather than guessed, and remediation invalidates the wave instead of
 patching a stale lane back into a pass. Two boundaries follow. A `PASS` is
 review evidence at one revision and nothing more: it is not CI, not
-merge-readiness, and not merge, and no OMH command merges anything. And the
-wave engine is injected in-process by its caller today, so there is no
-`fanout dispatch` flag that turns it on. Support here differs by surface, and
-that gap is a capability boundary, not an implied feature.
+merge-readiness, and not merge, and no OMH command merges anything.
+
+The normal operator path is explicit:
+
+```sh
+omh coding fanout dispatch <fanout-id> --goal-file goal.txt \
+  --run-verification \
+  --integration-worktree <clean-checkout> \
+  --integration-revision <HEAD-tree-sha> \
+  --final-review \
+  --hermes-provider <provider> --hermes-model <model>
+```
+
+The built-in adapter reuses four sanctioned Hermes children, one per lens, in
+the clean integrated checkout. Only an exact `<verdict>PASS</verdict>` or
+`<verdict>FAIL</verdict>` response is interpreted; missing or malformed output
+blocks the lane. Without `--final-review`, the existing dispatch result is
+unchanged, and caller-injected engines remain the extension seam.
 
 ## Dispatching a committed paired-run decision
 

@@ -130,6 +130,11 @@ PR without the chat history.
   not a third subprocess authority. Executors without a receipt-capable
   adapter are refused without substitution; caller-injected adapters remain
   the executor-neutral extension seam.
+- `omh coding fanout dispatch --final-review` may also compose that existing
+  child boundary after dispatcher-observed integration GREEN. It requires the
+  explicit flag, a clean integrated worktree/tree revision, and named Hermes
+  provider/model settings; four read-only lenses run under fixed concurrency,
+  parse only a closed verdict token, and cannot merge or mutate the checkout.
 - No Hermes core patching.
 - Runtime artifacts are local, deterministic, schema-versioned, and
   metadata-only by default.
