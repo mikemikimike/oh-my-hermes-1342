@@ -121,6 +121,15 @@ PR without the chat history.
   `routing_observation/v1` evidence, and never runs automatically. This
   boundary supports observed Hermes execution and the explicit benchmark
   controller; it does not make core OMH a provider client or hidden runtime.
+- `omh coding paired-run dispatch` may reuse that same Hermes-child boundary
+  for explicitly confirmed evaluation cells. The operator supplies one
+  digest-matching task file per frozen task, the repository/revision, and the
+  provider; OMH passes task bytes over child stdin, creates detached per-cell
+  worktrees, verifies signed evaluation bindings, removes the worktrees, and
+  persists no task body. This is a front door to the approved child boundary,
+  not a third subprocess authority. Executors without a receipt-capable
+  adapter are refused without substitution; caller-injected adapters remain
+  the executor-neutral extension seam.
 - No Hermes core patching.
 - Runtime artifacts are local, deterministic, schema-versioned, and
   metadata-only by default.

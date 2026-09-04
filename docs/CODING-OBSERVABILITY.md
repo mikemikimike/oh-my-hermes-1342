@@ -483,8 +483,11 @@ Three properties are worth knowing before quoting the numbers:
 - **An unreconcilable lifecycle reports gaps, not metrics.** A dependency cycle
   or an out-of-order dependency leaves `metrics` as `null` and lists explicit
   `evidence_gaps` entries naming the task and the reason. A malformed or
-  hand-edited journal line does the same. The projection would rather say what
-  it could not reconcile than average its way past it.
+  hand-edited journal line does the same. The reader caps bytes, line length,
+  and record count before parsing; crossing a bound yields
+  `health_event_journal_limit`, no partial event set, and no metrics. The
+  projection would rather say what it could not reconcile than average its way
+  past it.
 - **The owner is recorded as `fanout`, deliberately.** This reads an aggregate,
   not one named executor's progress stream, so the committed section stays the
   only place its timings can be claimed from.
@@ -501,6 +504,10 @@ Four lenses are declared in a fixed reporting order: `requirement`, `quality`,
 and every lane is bound read-only to one immutable 40-hex integrated revision.
 A lane that mutates anything, or that reports an observation from any other
 revision, is refused rather than merged into the aggregate.
+The fan-out hook also probes the clean integrated tree before and after the
+wave and records one execution reference per observed lane. A complete-looking
+engine result with no matching lane observations, or a dirty or changed
+checkout after review, is `BLOCK`, never `PASS`.
 
 The wave reduces to exactly three verdicts:
 
@@ -530,14 +537,26 @@ comparison they want to Hermes.
 
 ```sh
 omh coding paired-run dispatch --decision decision.json --dry-run
-omh coding paired-run dispatch --decision decision.json --confirm-dispatch
+omh coding paired-run dispatch --decision decision.json --confirm-dispatch \
+  --task-file task-a=task-a.txt --repo . --provider <provider>
 ```
 
 `--dry-run` parses a committed `paired_run_decision/v1` document, builds the
 plan, prints it, and launches nothing. Without `--dry-run`, dispatch refuses
-unless `--confirm-dispatch` is typed. Even then it refuses again unless a local
-runner boundary was injected by the caller: this command starts no process on
-its own. Two explicit gates and an injected runner is the whole entry path.
+unless `--confirm-dispatch` is typed. A confirmed Hermes matrix then reuses the
+already-sanctioned Hermes-child process boundary; it is not a third subprocess
+path. Each `--task-file TASK_ID=PATH` is read through the bounded no-follow
+reader, checked against the decision's input digest, held only in memory, and
+delivered to the child over stdin. `--repo` must resolve the decision's exact
+40-hex execution commit, and each cell starts from a distinct detached
+worktree that is removed after its terminal result.
+
+The built-in receipt-capable adapter currently supports decision arms whose
+executor is `hermes`. A Codex, Claude Code, or generic arm is refused before
+Git or child execution rather than silently substituted. Those executors use
+the same public runner boundary when a caller supplies an adapter capable of
+returning the authenticated receipt contract. This is an explicit capability
+boundary, not a default-to-Hermes rule.
 
 The plan is derived from the frozen decision, never from CLI overrides. Arms,
 tasks, executors, models, and the maximum dispatch seconds come out of the
@@ -552,7 +571,8 @@ command line. What the payload states:
   stay scope-equivalent; parallelism changes the peaks, not what each cell may
   touch.
 - **The boundary itself.** `local_runner_boundary` records that a confirmed
-  dispatch requires the injected runner and that `paired_run_decision/v1`
+  dispatch uses an explicit confirmed adapter, that the built-in Hermes adapter
+  reuses the sanctioned child bridge, and that `paired_run_decision/v1`
   carries no raw task content.
 
 Evidence closes the loop in one direction only. An execution matrix becomes an
@@ -568,11 +588,13 @@ decides behavior.
 
 A prepared handoff, plan, status, or review can be a wall of structured text.
 The common facade has typed projectors for those registered schema families.
-The observed persisted wrapper path currently supplies a runtime-handoff
-source; other selected wrapper artifacts remain unavailable until their own
-structured source projectors are registered rather than relabeled. The shape
-view answers "what does this supported source look like" without pasting the
-artifact into chat.
+The persisted wrapper path supplies prompt and runtime handoffs plus every
+recorded `coding_briefing/v1` artifact: acceptance/verification, status,
+evidence gaps, next action, and issue/PR follow-up. Each keeps its exact source
+schema and field refs rather than being relabeled as a plan or review. A lens
+whose recorded fields are insufficient remains unavailable. The shape view
+answers "what does this supported source look like" without pasting unrelated
+artifact content into chat.
 
 People stay in chat and ask Hermes about the work it prepared. The projection
 is a wrapper-facing selected action, so a wrapper that wires it can answer that
@@ -652,9 +674,9 @@ lenses. `PASS` is review evidence at that revision; it is not CI, not
 merge-readiness, not merge, and nothing in OMH merges a branch.
 
 A paired-run plan is prepared intent. `--dry-run` output describes cells that
-have not launched, and a confirmed dispatch is still only what an injected local
-runner did, attested by receipts, over one committed decision. It is not a
-general quality claim about either arm.
+have not launched, and a confirmed dispatch is still only what the explicit
+local adapter did, attested by receipts, over one committed decision. It is not
+a general quality claim about either arm.
 
 An artifact shape is a picture of recorded fields. It projects what a source
 stated, and it settles nothing about whether that source was dispatched, run,

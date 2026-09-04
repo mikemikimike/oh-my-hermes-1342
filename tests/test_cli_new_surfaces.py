@@ -260,7 +260,7 @@ class PairedRunDispatchCliTests(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertIn("--confirm-dispatch", stderr)
 
-    def test_confirmed_cli_dispatch_without_runner_boundary_fails_honestly(self) -> None:
+    def test_confirmed_cli_dispatch_without_task_source_fails_honestly(self) -> None:
         with TemporaryDirectory() as raw:
             decision = self._decision_path(Path(raw))
             status, _stdout, stderr = run_cli(
@@ -269,7 +269,7 @@ class PairedRunDispatchCliTests(unittest.TestCase):
             )
 
         self.assertEqual(status, 2)
-        self.assertIn("injected local runner boundary", stderr)
+        self.assertIn("--task-file", stderr)
 
 
 if __name__ == "__main__":

@@ -574,6 +574,19 @@ GIT_ARGV_ALLOWLIST: dict[tuple[str, tuple[str, ...]], str] = {
         "base_sha still describes it, and once on refs/heads/<branch>, to prove the unit branch does "
         "not already exist; read-only local object lookups"
     ),
+    ("src/coding/paired_run_local_runner.py", ("rev-parse",)): (
+        "`git rev-parse --verify <execution_revision>^{commit}` proves the explicitly confirmed "
+        "paired-run adapter will create every detached cell from the immutable commit in the "
+        "decision; read-only, local-only, and names no remote"
+    ),
+    ("src/coding/paired_run_local_worktrees.py", ("worktree", "add")): (
+        "creates one detached local worktree per explicitly confirmed paired-run cell at the "
+        "already-validated decision revision; touches no remote"
+    ),
+    ("src/coding/paired_run_local_worktrees.py", ("worktree", "remove")): (
+        "removes only the detached local worktree this paired-run invocation created after the "
+        "cell reaches a terminal state; touches no remote"
+    ),
     ("src/commands/coding.py", ("rev-parse",)): (
         "resolves --base-ref to a commit sha inside `coding fanout dispatch`; read-only"
     ),

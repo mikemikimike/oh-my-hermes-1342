@@ -19,10 +19,18 @@ from ..coding.paired_run_dispatch import (
     plan_paired_run_dispatch,
 )
 from ..coding.paired_run_execution import PairedRunExecutionReport
+from ..coding.paired_run_local_runner import (
+    build_paired_run_local_boundary,
+    parse_task_file_arguments,
+)
+from ..coding.paired_run_local_models import (
+    PairedRunLocalRunnerConfig,
+    PairedRunLocalRunnerError,
+)
 from ..installer import OmhError
 from ..quality.paired_run_decision import parse_paired_run_decision
 from ..quality.paired_run_model import ArmRole, PairedRunDecision, PairedRunValidationError
-from .common import _print_json
+from .common import _paths, _print_json
 
 PairedRunRunnerBoundary = Callable[[PairedRunDispatchPlan], PairedRunExecutionReport]
 
@@ -50,7 +58,24 @@ def cmd_coding_paired_run_dispatch(
     if not args.confirm_dispatch:
         raise OmhError("paired-run dispatch requires --confirm-dispatch; use --dry-run to inspect the inert plan")
     if runner_boundary is None:
-        raise OmhError("paired-run dispatch requires an injected local runner boundary")
+        try:
+            task_files = parse_task_file_arguments(
+                tuple(getattr(args, "task_file", ()))
+            )
+            runner_boundary = build_paired_run_local_boundary(
+                decision,
+                task_files,
+                PairedRunLocalRunnerConfig(
+                    paths=_paths(args),
+                    repo_root=Path(getattr(args, "repo", ".")).expanduser(),
+                    provider=str(getattr(args, "provider", "")),
+                    hermes=str(getattr(args, "hermes", "hermes")),
+                    reasoning=str(getattr(args, "reasoning", "medium")),
+                    timeout_seconds=getattr(args, "timeout", 900.0),
+                ),
+            )
+        except PairedRunLocalRunnerError as exc:
+            raise OmhError(str(exc)) from exc
     report = runner_boundary(plan)
     _print_json({**_plan_payload(plan, config), "execution": report.metadata()})
     return 0
@@ -107,7 +132,8 @@ def _plan_payload(plan: PairedRunDispatchPlan, config: PairedRunDispatchConfig) 
         "budgets": _budgets_payload(config.budgets),
         "isolation": _isolation_payload(plan, config.shared_resource_mode),
         "local_runner_boundary": (
-            "required_for_confirmed_dispatch; paired_run_decision/v1 contains no raw task content"
+            "explicit_confirmed_adapter; hermes reuses the sanctioned child boundary; "
+            "paired_run_decision/v1 contains no raw task content"
         ),
         "cells": [
             {
@@ -160,5 +186,37 @@ def add_coding_paired_run_command(coding_sub: argparse._SubParsersAction[argpars
     dispatch.add_argument("--decision", required=True, help="Path to a paired_run_decision/v1 document.")
     dispatch.add_argument("--dry-run", action="store_true", help="Build and print the inert plan without launching any runner.")
     dispatch.add_argument("--confirm-dispatch", action="store_true", help="Explicitly authorize handoff to the injected local runner boundary.")
+    dispatch.add_argument(
+        "--task-file",
+        action="append",
+        default=[],
+        help="Task input as TASK_ID=PATH; repeated once per frozen task.",
+    )
+    dispatch.add_argument(
+        "--repo",
+        default=".",
+        help="Git repository providing the immutable execution revision.",
+    )
+    dispatch.add_argument(
+        "--provider",
+        default="",
+        help="Hermes provider for the sanctioned local adapter.",
+    )
+    dispatch.add_argument(
+        "--hermes",
+        default="hermes",
+        help="Hermes executable used by the sanctioned child boundary.",
+    )
+    dispatch.add_argument(
+        "--reasoning",
+        default="medium",
+        help="Hermes reasoning effort for every frozen cell.",
+    )
+    dispatch.add_argument(
+        "--timeout",
+        type=float,
+        default=900.0,
+        help="Per-cell timeout, capped by the frozen decision.",
+    )
     dispatch.add_argument("--json", action="store_true", help="Emit the machine payload.")
     dispatch.set_defaults(func=cmd_coding_paired_run_dispatch)

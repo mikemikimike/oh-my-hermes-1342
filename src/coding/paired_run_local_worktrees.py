@@ -1,0 +1,105 @@
+"""Detached worktree lifecycle for explicit paired-run execution."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from pathlib import Path
+from threading import Lock
+
+from ..quality.paired_run_model import PairedRunDecision
+from .fanout_dispatch import signal_safe_unit_runner
+from .paired_run_dispatch_model import PairedRunDispatchCell, PairedRunDispatchPlan
+from .paired_run_execution import execute_paired_run_plan
+from .paired_run_execution_model import (
+    PairedRunCleanupFailure,
+    PairedRunExecutionOutcome,
+    PairedRunExecutionReport,
+    PairedRunRunnerFailure,
+    PairedRunWorkspace,
+    PairedRunWorkspaceFailure,
+)
+from .paired_run_hermes_adapter import run_hermes_paired_cell
+from .paired_run_local_models import PairedRunLocalRunnerConfig
+
+
+def execute_local_paired_plan(
+    plan: PairedRunDispatchPlan,
+    decision: PairedRunDecision,
+    contents: Mapping[str, str],
+    config: PairedRunLocalRunnerConfig,
+) -> PairedRunExecutionReport:
+    """Execute each frozen cell from a distinct detached checkout."""
+    worktrees: dict[str, Path] = {}
+    worktree_lock = Lock()
+
+    def workspace_factory(cell: PairedRunDispatchCell) -> PairedRunWorkspace:
+        path = (
+            config.repo_root.parent
+            / f"{config.repo_root.name}-{cell.workspace_id}"
+        )
+        if path.exists():
+            raise PairedRunWorkspaceFailure("paired-run worktree already exists")
+        if _add_worktree(
+            config.repo_root, path, cell.execution_revision
+        ) != 0:
+            raise PairedRunWorkspaceFailure("paired-run worktree creation failed")
+        with worktree_lock:
+            worktrees[cell.workspace_id] = path
+        return PairedRunWorkspace(cell.workspace_id)
+
+    def runner(
+        cell: PairedRunDispatchCell,
+        workspace: PairedRunWorkspace,
+    ) -> PairedRunExecutionOutcome:
+        with worktree_lock:
+            path = worktrees.get(workspace.workspace_id)
+        if path is None or workspace.workspace_id != cell.workspace_id:
+            raise PairedRunRunnerFailure("paired-run workspace identity mismatch")
+        return run_hermes_paired_cell(
+            plan.decision_id,
+            cell,
+            contents[cell.task_id],
+            path,
+            decision,
+            config,
+        )
+
+    def cleaner(
+        cell: PairedRunDispatchCell,
+        workspace: PairedRunWorkspace,
+    ) -> bool:
+        with worktree_lock:
+            path = worktrees.pop(workspace.workspace_id, None)
+        if path is None or workspace.workspace_id != cell.workspace_id:
+            raise PairedRunCleanupFailure("paired-run workspace identity mismatch")
+        removed = _remove_worktree(config.repo_root, path)
+        return removed == 0 and not path.exists()
+
+    return execute_paired_run_plan(
+        plan,
+        workspace_factory=workspace_factory,
+        runner=runner,
+        cleaner=cleaner,
+    )
+
+
+def _add_worktree(repo: Path, path: Path, revision: str) -> int:
+    completed = signal_safe_unit_runner(
+        ["git", "worktree", "add", "--detach", str(path), revision],
+        cwd=str(repo),
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    return int(completed.returncode)
+
+
+def _remove_worktree(repo: Path, path: Path) -> int:
+    completed = signal_safe_unit_runner(
+        ["git", "worktree", "remove", "--force", str(path)],
+        cwd=str(repo),
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    return int(completed.returncode)

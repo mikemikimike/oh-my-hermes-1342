@@ -133,7 +133,8 @@ OMH is not:
   fanout dispatch bridge and the Hermes-native child boundary: operator or
   maintainer commands that spawn local agent CLIs only after confirmation,
   isolate the process, and record authenticated observed evidence — the
-  opposite of hidden)
+  opposite of hidden; paired-run dispatch may compose the latter for
+  digest-bound Hermes evaluation cells without adding a third process bridge)
 - a claim that Hermes executed work that only a handoff prepared
 
 ## Routing Language Policy
