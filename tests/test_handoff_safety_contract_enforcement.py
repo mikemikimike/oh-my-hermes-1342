@@ -141,6 +141,11 @@ PROCESS_SPAWN_ALLOWLIST: dict[str, str] = {
         "`omh coding fanout dispatch` -- the one opt-in bridge that spawns local agent CLIs, "
         "documented as the scoped exception in CLAUDE.md."
     ),
+    "src/coding/diagnostic_execution_engine.py": (
+        "`omh coding fanout dispatch --diagnostics` with an injected execution engine; imports "
+        "only subprocess exception classes to classify an injected runner's bounded failure and "
+        "contains no process-spawn call of its own."
+    ),
     "src/coding/worktree_creator.py": (
         "`git worktree add` for isolated executor workspaces; local, non-remote (see INVARIANT 3)."
     ),

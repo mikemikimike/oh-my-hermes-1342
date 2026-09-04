@@ -19,19 +19,59 @@ from __future__ import annotations
 
 import unittest
 
-from diagnostic_provider_claims_records_tests import ClaimBoundaryTests, OutcomeRecordTests
-from diagnostic_provider_config_tests import (
-    ConfigIdentityTests,
-    ProviderAllowlistTests,
-    ProviderBoundsTests,
-)
-from diagnostic_provider_outcomes_tests import CompatibilityMarkerTests, OutcomeVocabularyTests
-from diagnostic_provider_scope_privacy_tests import (
-    ChangedFileScopeTests,
-    MetadataOnlyShapeTests,
-    MovingRevisionEqualityTests,
-)
-from diagnostic_provider_scheduler_tests import ModuleBoundaryTests, StatefulSerialFallbackTests
+import diagnostic_provider_claims_records_tests as _claims
+import diagnostic_provider_config_tests as _config
+import diagnostic_provider_outcomes_tests as _outcomes
+import diagnostic_provider_scheduler_tests as _scheduler
+import diagnostic_provider_scope_privacy_tests as _scope
+
+
+class ClaimBoundaryTests(_claims.ClaimBoundaryTests):
+    pass
+
+
+class OutcomeRecordTests(_claims.OutcomeRecordTests):
+    pass
+
+
+class ConfigIdentityTests(_config.ConfigIdentityTests):
+    pass
+
+
+class ProviderAllowlistTests(_config.ProviderAllowlistTests):
+    pass
+
+
+class ProviderBoundsTests(_config.ProviderBoundsTests):
+    pass
+
+
+class CompatibilityMarkerTests(_outcomes.CompatibilityMarkerTests):
+    pass
+
+
+class OutcomeVocabularyTests(_outcomes.OutcomeVocabularyTests):
+    pass
+
+
+class ModuleBoundaryTests(_scheduler.ModuleBoundaryTests):
+    pass
+
+
+class StatefulSerialFallbackTests(_scheduler.StatefulSerialFallbackTests):
+    pass
+
+
+class ChangedFileScopeTests(_scope.ChangedFileScopeTests):
+    pass
+
+
+class MetadataOnlyShapeTests(_scope.MetadataOnlyShapeTests):
+    pass
+
+
+class MovingRevisionEqualityTests(_scope.MovingRevisionEqualityTests):
+    pass
 
 __all__ = (
     "ChangedFileScopeTests",

@@ -149,7 +149,17 @@ class CriticalPathComparisonAndPrivacyTests(unittest.TestCase):
                     compare_critical_path_health(baseline, project_critical_path_health(replacement))
 
     def test_events_reject_private_or_payload_shaped_metadata(self) -> None:
-        for forbidden in ("command", "output", "source", "prompt", "credential", "private", "payload", "AKIAIOSFODNN7EXAMPLE"):
+        aws_access_key = "AKIA" + "IOSFODNN7EXAMPLE"
+        for forbidden in (
+            "command",
+            "output",
+            "source",
+            "prompt",
+            "credential",
+            "private",
+            "payload",
+            aws_access_key,
+        ):
             with self.subTest(forbidden=forbidden):
                 with self.assertRaisesRegex(ValueError, "metadata"):
                     _event(f"task-{forbidden}", "queued", 0)

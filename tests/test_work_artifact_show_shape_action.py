@@ -18,8 +18,16 @@ from _local_package import load_local_package
 
 load_local_package()
 
-from _work_artifact_shape_listing_cases import WorkArtifactShapeListingTests
-from _work_artifact_shape_show_cases import WorkArtifactShowShapeActionTests
+import _work_artifact_shape_listing_cases as _listing
+import _work_artifact_shape_show_cases as _show
+
+
+class WorkArtifactShapeListingTests(_listing.WorkArtifactShapeListingTests):
+    pass
+
+
+class WorkArtifactShowShapeActionTests(_show.WorkArtifactShowShapeActionTests):
+    pass
 
 __all__ = [
     "WorkArtifactShapeListingTests",
