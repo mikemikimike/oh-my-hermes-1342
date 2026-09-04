@@ -21,6 +21,15 @@ class PairedRunExecutionError(RuntimeError):
 class PairedRunWorkspaceFailure(PairedRunExecutionError):
     """The injected workspace factory could not prepare a workspace."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        cleanup_succeeded: bool | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.cleanup_succeeded = cleanup_succeeded
+
 
 class PairedRunRunnerFailure(PairedRunExecutionError):
     """The injected runner reported an expected execution failure."""

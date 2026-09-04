@@ -1,4 +1,4 @@
-"""Explicit operator boundary for an already-committed paired-run decision."""
+"""Explicit paired-run boundary with a built-in sanctioned Hermes adapter."""
 
 from __future__ import annotations
 
@@ -89,15 +89,29 @@ def _dispatch_config(decision: PairedRunDecision, *, approved: bool, dry_run: bo
     baseline = decision.baseline
     variant = decision.variant
     cell_count = len(decision.tasks) * len(ArmRole)
+    maximum_concurrency = min(2, cell_count)
     executor_names = tuple(sorted({baseline.executor, variant.executor}))
     targets = (
         _target(ArmRole.BASELINE, baseline.executor, baseline.model),
         _target(ArmRole.VARIANT, variant.executor, variant.model),
     )
     budgets = DispatchBudgets(
-        1,
-        tuple(NamedConcurrencyBudget(name, 1) for name in executor_names),
-        (NamedConcurrencyBudget("local", 1),),
+        maximum_concurrency,
+        tuple(
+            NamedConcurrencyBudget(
+                name,
+                min(
+                    maximum_concurrency,
+                    len(decision.tasks)
+                    * sum(
+                        arm.executor == name
+                        for arm in (baseline, variant)
+                    ),
+                ),
+            )
+            for name in executor_names
+        ),
+        (NamedConcurrencyBudget("local", maximum_concurrency),),
         CostTimeBound(cell_count, decision.max_dispatch_seconds),
         CostTimeBound(cell_count, decision.max_dispatch_seconds),
     )
@@ -118,7 +132,7 @@ def _target(arm: ArmRole, executor: str, model: str) -> ArmDispatchTarget:
         model,
         CostTimeBound(1, 1),
         CostTimeBound(1, 1),
-        "paired-run-local-boundary",
+        None,
     )
 
 
@@ -181,7 +195,7 @@ def add_coding_paired_run_command(coding_sub: argparse._SubParsersAction[argpars
     paired_sub = paired_run.add_subparsers(dest="paired_run_command", required=True)
     dispatch = paired_sub.add_parser(
         "dispatch",
-        help="Dispatch only through an injected local runner after explicit confirmation; --dry-run launches nothing.",
+        help="Dispatch through the sanctioned Hermes adapter or a caller-injected extension; --dry-run launches nothing.",
     )
     dispatch.add_argument("--decision", required=True, help="Path to a paired_run_decision/v1 document.")
     dispatch.add_argument("--dry-run", action="store_true", help="Build and print the inert plan without launching any runner.")

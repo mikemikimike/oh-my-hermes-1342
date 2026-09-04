@@ -146,6 +146,11 @@ PROCESS_SPAWN_ALLOWLIST: dict[str, str] = {
         "only subprocess exception classes to classify an injected runner's bounded failure and "
         "contains no process-spawn call of its own."
     ),
+    "src/coding/paired_run_local_worktrees.py": (
+        "`omh coding paired-run dispatch --confirm-dispatch`; imports only SubprocessError to "
+        "convert a timed-out local git worktree command into a per-cell failure with cleanup "
+        "evidence, while all process spawning stays in the existing sanctioned bridge."
+    ),
     "src/coding/worktree_creator.py": (
         "`git worktree add` for isolated executor workspaces; local, non-remote (see INVARIANT 3)."
     ),

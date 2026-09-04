@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from subprocess import SubprocessError
 from threading import Lock
 
 from ..quality.paired_run_model import PairedRunDecision
@@ -63,11 +64,24 @@ def execute_local_paired_plan(
         if path.exists():
             health.finished(cell.workspace_id, terminal_status="failed")
             raise PairedRunWorkspaceFailure("paired-run worktree already exists")
-        if _add_worktree(
-            config.repo_root, path, cell.execution_revision
-        ) != 0:
+        try:
+            added = _add_worktree(
+                config.repo_root, path, cell.execution_revision
+            )
+        except (OSError, SubprocessError) as exc:
             health.finished(cell.workspace_id, terminal_status="failed")
-            raise PairedRunWorkspaceFailure("paired-run worktree creation failed")
+            cleaned = _cleanup_path(health, cell, config.repo_root, path)
+            raise PairedRunWorkspaceFailure(
+                "paired-run worktree creation failed",
+                cleanup_succeeded=cleaned,
+            ) from exc
+        if added != 0:
+            health.finished(cell.workspace_id, terminal_status="failed")
+            cleaned = _cleanup_path(health, cell, config.repo_root, path)
+            raise PairedRunWorkspaceFailure(
+                "paired-run worktree creation failed",
+                cleanup_succeeded=cleaned,
+            )
         with worktree_lock:
             worktrees[cell.workspace_id] = path
         return PairedRunWorkspace(cell.workspace_id)
@@ -106,22 +120,7 @@ def execute_local_paired_plan(
             path = worktrees.pop(workspace.workspace_id, None)
         if path is None or workspace.workspace_id != cell.workspace_id:
             raise PairedRunCleanupFailure("paired-run workspace identity mismatch")
-        cleanup_id = f"{cell.workspace_id}:cleanup"
-        health.queued(
-            cleanup_id,
-            dependencies=(cell.workspace_id,),
-            resource_class="cleanup",
-            phase="cleanup",
-        )
-        health.started(cleanup_id, phase="cleanup")
-        removed = _remove_worktree(config.repo_root, path)
-        cleaned = removed == 0 and not path.exists()
-        health.finished(
-            cleanup_id,
-            terminal_status="succeeded" if cleaned else "failed",
-            phase="cleanup",
-        )
-        return cleaned
+        return _cleanup_path(health, cell, config.repo_root, path)
 
     return execute_paired_run_plan(
         plan,
@@ -150,6 +149,33 @@ def _health_status(
     if outcome.state.value == "cancelled":
         return "cancelled"
     return "failed"
+
+
+def _cleanup_path(
+    health: FanoutHealthEvents,
+    cell: PairedRunDispatchCell,
+    repo: Path,
+    path: Path,
+) -> bool:
+    cleanup_id = f"{cell.workspace_id}:cleanup"
+    health.queued(
+        cleanup_id,
+        dependencies=(cell.workspace_id,),
+        resource_class="cleanup",
+        phase="cleanup",
+    )
+    health.started(cleanup_id, phase="cleanup")
+    try:
+        removed = _remove_worktree(repo, path)
+    except (OSError, SubprocessError):
+        removed = -1
+    cleaned = (removed == 0 or not path.exists()) and not path.exists()
+    health.finished(
+        cleanup_id,
+        terminal_status="succeeded" if cleaned else "failed",
+        phase="cleanup",
+    )
+    return cleaned
 
 
 def _remove_worktree(repo: Path, path: Path) -> int:

@@ -107,6 +107,7 @@ def run_hermes_paired_cell(
                 hermes=config.hermes,
                 cwd=worktree,
                 evaluation_context=evaluation_context,
+                allow_parallel=True,
             ),
             dispatch_policy="ask_before_dispatch",
             confirmed=True,

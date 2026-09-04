@@ -117,7 +117,14 @@ def _execute_cell(
             created = True
             proposed = runner(cell, workspace)
         outcome = _authenticated_outcome(cell, proposed)
-    except (PairedRunWorkspaceFailure, PairedRunRunnerFailure):
+    except PairedRunWorkspaceFailure as exc:
+        outcome = PairedRunExecutionOutcome(
+            ExecutionState.CRASHED,
+            None,
+            cell=cell,
+            cleanup_succeeded=exc.cleanup_succeeded,
+        )
+    except PairedRunRunnerFailure:
         outcome = PairedRunExecutionOutcome(ExecutionState.CRASHED, None, cell=cell)
     if not created:
         return cell, outcome

@@ -211,9 +211,9 @@ class PairedRunDispatchCliTests(unittest.TestCase):
         self.assertEqual(
             payload["budgets"],
             {
-                "global_concurrency": 1,
-                "executor_concurrency": {"hermes": 1},
-                "provider_concurrency": {"local": 1},
+                "global_concurrency": 2,
+                "executor_concurrency": {"hermes": 2},
+                "provider_concurrency": {"local": 2},
                 "local_bound": {"cost_units": 2, "seconds": 60},
                 "provider_bound": {"cost_units": 2, "seconds": 60},
             },
@@ -222,8 +222,8 @@ class PairedRunDispatchCliTests(unittest.TestCase):
             payload["isolation"],
             {
                 "shared_resource_mode": "serialize",
-                "shared_resource_keys": ["paired-run-local-boundary"],
-                "launch_waves": [0, 1],
+                "shared_resource_keys": [],
+                "launch_waves": [0],
             },
         )
         self.assertEqual(len(payload["cells"]), 2)

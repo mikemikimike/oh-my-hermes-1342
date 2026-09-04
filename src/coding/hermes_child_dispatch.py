@@ -138,6 +138,7 @@ class HermesChildRequest:
     env: Mapping[str, str] | None = None
     depth: int = 0
     evaluation_context: HermesChildEvaluationContext | None = None
+    allow_parallel: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,11 +270,13 @@ def dispatch_hermes_child(
             request.model,
             request.timeout_seconds,
         )
-    _enter_dispatch_guard()
+    if not request.allow_parallel:
+        _enter_dispatch_guard()
     try:
         return _dispatch_guarded(request, cancellation=cancellation, observe=observe)
     finally:
-        _leave_dispatch_guard()
+        if not request.allow_parallel:
+            _leave_dispatch_guard()
 
 
 def _dispatch_guarded(

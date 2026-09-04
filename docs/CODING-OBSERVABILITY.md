@@ -559,7 +559,11 @@ path. Each `--task-file TASK_ID=PATH` is read through the bounded no-follow
 reader, checked against the decision's input digest, held only in memory, and
 delivered to the child over stdin. `--repo` must resolve the decision's exact
 40-hex execution commit, and each cell starts from a distinct detached
-worktree that is removed after its terminal result.
+worktree that is removed after its terminal result. Independent cells run with
+a derived global/executor/provider ceiling of two; a shared-resource key still
+serializes only the cells that name it. The Hermes-child bridge's normal
+single-dispatch guard remains the default for every other caller, while this
+confirmed matrix path opts into the paired-run scheduler's own bounded guard.
 
 The built-in receipt-capable adapter currently supports decision arms whose
 executor is `hermes`. A Codex, Claude Code, or generic arm is refused before
@@ -573,6 +577,11 @@ the paired decision id. The same `omh runtime health-summary --run-id
 <decision-id>` surface therefore reports observed queueing, execution, and
 cleanup timing for evaluation cells directly; no task body or child output is
 part of that journal.
+
+A timed-out or failed Git worktree command is contained as one `crashed` cell.
+The adapter attempts removal of the known partial path, records the cleanup
+result on that cell and in the health journal, and continues the matrix rather
+than leaking a raw subprocess exception.
 
 The plan is derived from the frozen decision, never from CLI overrides. Arms,
 tasks, executors, models, and the maximum dispatch seconds come out of the

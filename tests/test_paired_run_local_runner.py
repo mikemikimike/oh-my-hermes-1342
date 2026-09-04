@@ -221,6 +221,7 @@ class PairedRunLocalRunnerTests(unittest.TestCase):
             critical = health["critical_path_health"]
             self.assertEqual(health["owner_attribution"]["owner"], "paired-run")
             self.assertIsNotNone(critical["metrics"])
+            self.assertEqual(critical["metrics"]["peak_concurrency"], 2)
             self.assertEqual(
                 {row["task_id"] for row in critical["task_revisions"]},
                 {
