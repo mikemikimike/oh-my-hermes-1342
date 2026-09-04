@@ -2103,6 +2103,13 @@ def dispatch_fanout(
             integrated_revision=integrated_revision or "",
             integration_green=integration_green,
             producer_evidence=producer_evidence,
+            workspace_revision=(
+                lambda: _verification_worktree_revision(
+                    runner, integrated_worktree
+                )
+                if integrated_worktree is not None
+                else None
+            ),
         )
         if health_events is not None and integration_green and producer_evidence:
             health_events.finished(

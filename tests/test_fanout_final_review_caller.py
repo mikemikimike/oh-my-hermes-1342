@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 from pathlib import Path
 import subprocess
@@ -50,8 +51,29 @@ class _Engine:
         self.wave = wave
         self.calls: list[ImmutableRevision] = []
 
-    def execute(self, revision: ImmutableRevision) -> FinalReviewWave:
+    def execute(
+        self,
+        revision: ImmutableRevision,
+        observe: Callable[[LaneObservation], None],
+    ) -> FinalReviewWave:
         self.calls.append(revision)
+        for lane in self.wave.lanes:
+            if lane.observed_revision is not None:
+                observe(
+                    LaneObservation(lane.lens, lane.state, lane.observed_revision)
+                )
+        return self.wave
+
+
+class _SilentEngine:
+    def __init__(self, wave: FinalReviewWave) -> None:
+        self.wave = wave
+
+    def execute(
+        self,
+        revision: ImmutableRevision,
+        observe: Callable[[LaneObservation], None],
+    ) -> FinalReviewWave:
         return self.wave
 
 
@@ -64,6 +86,7 @@ class FanoutFinalReviewCallerTests(unittest.TestCase):
             integrated_revision=_REVISION,
             integration_green=True,
             producer_evidence=True,
+            workspace_revision=lambda: _REVISION,
         )
 
         self.assertEqual(engine.calls, [ImmutableRevision(_REVISION)])
@@ -71,6 +94,8 @@ class FanoutFinalReviewCallerTests(unittest.TestCase):
         self.assertEqual(result["final_review_aggregate"], {"revision": _REVISION, "verdict": "PASS"})
         self.assertEqual([record["lens"] for record in result["final_review_records"]], [lens.value for lens in LANE_ORDER])
         self.assertTrue(all(record["revision"] == _REVISION for record in result["final_review_records"]))
+        self.assertTrue(all(record["execution_observed"] for record in result["final_review_records"]))
+        self.assertTrue(all(str(record["execution_ref"]).startswith("final-review:") for record in result["final_review_records"]))
         self.assertNotIn("integration_ready", result)
         self.assertNotIn("verification_status", result)
 
@@ -181,6 +206,7 @@ class FanoutFinalReviewCallerTests(unittest.TestCase):
             integrated_revision=_REVISION,
             integration_green=True,
             producer_evidence=True,
+            workspace_revision=lambda: _REVISION,
         )
 
         self.assertEqual(result["final_review_status"], "BLOCK")
@@ -190,6 +216,34 @@ class FanoutFinalReviewCallerTests(unittest.TestCase):
             "blocking_lens": "safety",
         })
         self.assertNotIn("integration_ready", result)
+
+    def test_workspace_mutation_after_review_blocks_a_reported_pass(self) -> None:
+        revisions = iter((_REVISION, None))
+        engine = _Engine(_wave())
+
+        result = run_final_review_after_integration(
+            engine,
+            integrated_revision=_REVISION,
+            integration_green=True,
+            producer_evidence=True,
+            workspace_revision=lambda: next(revisions),
+        )
+
+        self.assertEqual(engine.calls, [ImmutableRevision(_REVISION)])
+        self.assertEqual(result["final_review_status"], "BLOCK")
+        self.assertNotIn("final_review_records", result)
+
+    def test_complete_wave_without_observed_lane_receipts_blocks(self) -> None:
+        result = run_final_review_after_integration(
+            _SilentEngine(_wave()),
+            integrated_revision=_REVISION,
+            integration_green=True,
+            producer_evidence=True,
+            workspace_revision=lambda: _REVISION,
+        )
+
+        self.assertEqual(result["final_review_status"], "BLOCK")
+        self.assertNotIn("final_review_records", result)
 
     def test_absent_engine_preserves_existing_dispatch_shape(self) -> None:
         self.assertIsNone(
