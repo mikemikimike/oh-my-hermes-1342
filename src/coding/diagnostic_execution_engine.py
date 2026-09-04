@@ -65,16 +65,39 @@ class DiagnosticExecutionEngine:
             return DiagnosticExecutionResult("disabled", ())
         if self._cancelled():
             return DiagnosticExecutionResult("cancelled", ())
-        baseline = self.revisions.read(request.workspace_id, request.baseline_revision)
-        end = self.revisions.read(request.workspace_id, request.end_revision)
-        files = self.resolver.resolve(request.workspace_id, baseline, end)
+        execution_workspace = request.workspace_path or request.workspace_id
+        baseline = self.revisions.read(execution_workspace, request.baseline_revision)
+        end = self.revisions.read(execution_workspace, request.end_revision)
+        if request.workspace_path and self.settings.revalidate_workspace_head:
+            workspace_head = self.revisions.read(execution_workspace, "HEAD")
+            if workspace_head != end:
+                return DiagnosticExecutionResult("stale", ())
+        files = self.resolver.resolve(execution_workspace, baseline, end)
         selected = self._selected(files)
         if not selected:
             return DiagnosticExecutionResult("unsupported", ())
         with ThreadPoolExecutor(max_workers=min(len(selected), self.settings.max_global_concurrency)) as pool:
-            futures = [pool.submit(self._observe_pair, request, capability, files, baseline, end) for capability in selected]
+            futures = [
+                pool.submit(
+                    self._observe_pair,
+                    request,
+                    capability,
+                    files,
+                    baseline,
+                    end,
+                    execution_workspace,
+                )
+                for capability in selected
+            ]
             pairs = [future.result() for future in futures]
-        final_end = self.revisions.read(request.workspace_id, request.end_revision)
+        final_end = self.revisions.read(execution_workspace, request.end_revision)
+        if request.workspace_path and self.settings.revalidate_workspace_head:
+            final_workspace_head = self.revisions.read(
+                execution_workspace,
+                "HEAD",
+            )
+            if final_workspace_head != final_end:
+                final_end = final_workspace_head
         results = tuple(
             self._result(request, capability, files, pair, baseline, end, final_end)
             for capability, pair in zip(selected, pairs)
@@ -97,13 +120,14 @@ class DiagnosticExecutionEngine:
         files: tuple[str, ...],
         baseline: str,
         end: str,
+        execution_workspace: str,
     ) -> tuple[ProviderObservation, ProviderObservation]:
         scope = _in_scope(files, capability)
         lock = self._stateful_locks.get(capability.provider_id)
         with lock if lock is not None else nullcontext():
             return (
-                self._observe(capability, request.workspace_id, baseline, scope),
-                self._observe(capability, request.workspace_id, end, scope),
+                self._observe(capability, execution_workspace, baseline, scope),
+                self._observe(capability, execution_workspace, end, scope),
             )
 
     def _observe(

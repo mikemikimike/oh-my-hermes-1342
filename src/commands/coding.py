@@ -14,6 +14,7 @@ from ..coding.final_review_local_engine import (
     FinalReviewLocalEngineError,
     HermesFinalReviewEngine,
 )
+from ..coding.local_diagnostic_engine import build_local_diagnostic_engine
 from ..coding.executor_capability_snapshots import (
     ExecutorCapabilitySnapshotError,
     build_executor_capability_snapshot,
@@ -2084,9 +2085,11 @@ def cmd_coding_fanout_dispatch(
 
     paths = _paths(args)
     recovery_kwargs = _failure_recovery_kwargs(args)
-    if args.diagnostics and diagnostic_engine is None:
-        raise OmhError("--diagnostics requires an injected diagnostic execution engine")
-    selected_diagnostic_engine = diagnostic_engine if args.diagnostics else None
+    selected_diagnostic_engine = (
+        (diagnostic_engine or build_local_diagnostic_engine())
+        if args.diagnostics
+        else None
+    )
     try:
         parallelism = read_parallelism_policy(paths)
     except ValueError as exc:
@@ -2725,7 +2728,7 @@ def _add_coding_commands(sub) -> None:
     diagnostics.add_argument(
         "--diagnostics",
         action="store_true",
-        help="Enable the optional post-GREEN diagnostic hook through an injected execution engine.",
+        help="Run optional allowlisted local post-GREEN diagnostics; an injected engine may override.",
     )
     diagnostics.add_argument(
         "--no-diagnostics",

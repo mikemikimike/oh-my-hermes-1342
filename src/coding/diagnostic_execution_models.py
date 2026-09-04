@@ -85,6 +85,7 @@ class DiagnosticExecutionSettings:
     max_global_concurrency: int = 4
     max_provider_concurrency: int = 1
     stateful_providers: frozenset[str] = frozenset()
+    revalidate_workspace_head: bool = False
 
     def __post_init__(self) -> None:
         for field, value in (
@@ -107,6 +108,7 @@ class DiagnosticExecutionRequest:
     workspace_id: str
     baseline_revision: str
     end_revision: str
+    workspace_path: str = ""
 
 
 @dataclass(frozen=True)

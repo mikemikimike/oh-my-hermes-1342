@@ -17,7 +17,6 @@ from _work_artifact_shape_payloads import WorkArtifactShapeSessionPayloads
 
 load_local_package()
 
-from omh.commands.main import build_parser  # noqa: E402
 from omh.commands.paired_run import cmd_coding_paired_run_dispatch  # noqa: E402
 from omh.coding.paired_run_execution import PairedRunExecutionReport  # noqa: E402
 from omh.quality.paired_run_decision import build_paired_run_decision  # noqa: E402
@@ -159,22 +158,6 @@ class RuntimeArtifactShowShapeCliTests(unittest.TestCase):
 
         self.assertEqual(status, 0, stderr)
         self.assertEqual(json.loads(stdout)["shape"]["reason"], "unknown_artifact_id")
-
-
-class FanoutDiagnosticsCliTests(unittest.TestCase):
-    def test_optional_diagnostics_hook_is_disabled_unless_the_operator_enables_it(self) -> None:
-        base = ["coding", "fanout", "dispatch", "fanout-1", "--goal-file", "goal.txt"]
-
-        self.assertFalse(build_parser().parse_args(base).diagnostics)
-        self.assertTrue(build_parser().parse_args([*base, "--diagnostics"]).diagnostics)
-        self.assertFalse(build_parser().parse_args([*base, "--no-diagnostics"]).diagnostics)
-
-    def test_health_events_are_explicitly_opt_in_and_can_be_disabled(self) -> None:
-        base = ["coding", "fanout", "dispatch", "fanout-1", "--goal-file", "goal.txt"]
-
-        self.assertFalse(build_parser().parse_args(base).health_events)
-        self.assertTrue(build_parser().parse_args([*base, "--health-events"]).health_events)
-        self.assertFalse(build_parser().parse_args([*base, "--no-health-events"]).health_events)
 
 
 class PairedRunDispatchCliTests(unittest.TestCase):

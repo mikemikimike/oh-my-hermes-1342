@@ -326,19 +326,31 @@ omh coding fanout dispatch <fanout-id> --goal-file goal.txt \
   --run-verification --diagnostics
 ```
 
-`--no-diagnostics` is the default, and typing the flag is only half of the
-boundary. `--diagnostics` requires an injected diagnostic execution engine; the
-CLI refuses the run when none was supplied, because OMH installs no language
-server, starts no provider process, and opens no socket. A caller that already
-runs a provider itself supplies the engine and gets the bounded, allowlisted,
-serial scheduling described above; everyone else gets a clear refusal instead
-of a silent skip.
+`--no-diagnostics` is the default. When the operator types `--diagnostics`,
+the repository-owned adapter discovers the closed local command set
+(`pyright`, `basedpyright`, and `ruff`) from `PATH`; it installs nothing,
+accepts no executable override, invokes no shell, and opens no socket. A
+caller-supplied engine remains the executor-neutral extension seam. If none of
+the built-in commands is available, the diagnostic result is explicitly
+`unsupported`/`held` rather than silently clean.
+
+For each selected provider, OMH derives at most 200 changed paths from Git,
+materializes each fixed revision in a detached temporary worktree, and runs
+only the provider's fixed argv template. Global concurrency is two and
+per-provider concurrency is one; the pyright-family providers are marked
+stateful and serialized across overlapping requests. Each process has the
+provider timeout, a process-group cancellation path, an allowlisted
+environment with credentials removed, and hard-capped stdout/stderr drainers.
+Provider messages, snippets, stderr, absolute paths, and raw JSON are discarded
+after normalization. The temporary revision worktree is removed before the
+observation returns, and a moved or dirty execution checkout becomes stale
+rather than clean.
 
 Four conditions gate each unit's check, and all four must hold:
 
 | Condition | Why |
 | --- | --- |
-| the engine is present and enabled | nothing is inferred from the flag alone |
+| a discovered local or caller-supplied engine is enabled | no missing provider is inferred to have run |
 | the unit's verification passed | a diagnostic pass on a red unit answers a question nobody asked |
 | producer evidence exists | the unit's own result has to be attributable first |
 | both revisions are fixed 40-hex Git object identities | a check "at HEAD" is stale by construction, so it never runs here |

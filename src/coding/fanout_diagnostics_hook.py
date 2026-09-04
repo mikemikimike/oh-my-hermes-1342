@@ -15,6 +15,7 @@ def run_post_green_diagnostics(
     *,
     owner: str,
     workspace_id: str,
+    workspace_path: str = "",
     baseline_revision: str,
     end_revision: str,
     verification_passed: bool,
@@ -40,6 +41,7 @@ def run_post_green_diagnostics(
             workspace_id=workspace_id,
             baseline_revision=baseline_revision,
             end_revision=end_revision,
+            workspace_path=workspace_path,
         )
     )
     evidence = [result.evidence for result in execution.results]

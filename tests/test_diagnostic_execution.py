@@ -82,6 +82,41 @@ class BaselineAndEndExecutionTests(unittest.TestCase):
         self.assertNotIn("verification", pyright.evidence["summary_label"].lower())
         self.assertEqual(first.results, second.results)
 
+    def test_fixed_revision_is_stale_when_the_execution_workspace_head_moves(self) -> None:
+        end = "a" * 40
+        moved = "c" * 40
+
+        class WorkspaceRevisions:
+            def __init__(self) -> None:
+                self.heads = iter((end, moved))
+
+            def read(self, workspace_id: str, revision: str) -> str:
+                return next(self.heads) if revision == "HEAD" else revision
+
+        result = DiagnosticExecutionEngine(
+            config=_config("ruff"),
+            resolver=_Resolver(),
+            revisions=WorkspaceRevisions(),
+            runner=_Runner(),
+            settings=DiagnosticExecutionSettings(
+                revalidate_workspace_head=True
+            ),
+        ).execute(
+            DiagnosticExecutionRequest(
+                "wrapper",
+                "local/omh",
+                "b" * 40,
+                end,
+                workspace_path="/tmp/diagnostic-workspace",
+            )
+        )
+
+        self.assertEqual(result.status, "stale")
+        self.assertEqual(
+            result.results[0].evidence["verdict"],
+            "stale_diagnostics",
+        )
+
     def test_disabled_and_unsupported_are_distinct_and_never_run_a_provider(self) -> None:
         disabled = DiagnosticExecutionEngine(
             config=_config("pyright"), resolver=_Resolver(), revisions=_Revisions(), runner=_Runner(),

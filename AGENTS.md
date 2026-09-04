@@ -135,6 +135,13 @@ PR without the chat history.
   explicit flag, a clean integrated worktree/tree revision, and named Hermes
   provider/model settings; four read-only lenses run under fixed concurrency,
   parse only a closed verdict token, and cannot merge or mutate the checkout.
+- `omh coding fanout dispatch --diagnostics` may spawn only the closed local
+  diagnostic command set after producer verification GREEN. The default
+  adapter discovers supported binaries from `PATH`, passes no shell text or
+  user-selected executable, materializes detached fixed-revision worktrees,
+  strips messages and absolute paths, redacts the child environment, caps
+  concurrency/time/output, and removes every temporary worktree. No provider
+  is installed or started unless the operator types the flag.
 - No Hermes core patching.
 - Runtime artifacts are local, deterministic, schema-versioned, and
   metadata-only by default.
