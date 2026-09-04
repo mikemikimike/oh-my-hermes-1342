@@ -82,6 +82,36 @@ class BaselineAndEndExecutionTests(unittest.TestCase):
         self.assertNotIn("verification", pyright.evidence["summary_label"].lower())
         self.assertEqual(first.results, second.results)
 
+    def test_provider_outcome_scope_excludes_changed_files_with_other_suffixes(self) -> None:
+        class MixedResolver:
+            def resolve(
+                self,
+                workspace_id: str,
+                baseline: str,
+                end: str,
+            ) -> tuple[str, ...]:
+                return ("src/a.py", "docs/guide.md")
+
+        result = DiagnosticExecutionEngine(
+            config=_config("ruff"),
+            resolver=MixedResolver(),
+            revisions=_Revisions(),
+            runner=_Runner(),
+        ).execute(
+            DiagnosticExecutionRequest(
+                "wrapper",
+                "local/omh",
+                "base",
+                "HEAD",
+            )
+        )
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(
+            result.results[0].end.in_scope_files,
+            ("src/a.py",),
+        )
+
     def test_fixed_revision_is_stale_when_the_execution_workspace_head_moves(self) -> None:
         end = "a" * 40
         moved = "c" * 40

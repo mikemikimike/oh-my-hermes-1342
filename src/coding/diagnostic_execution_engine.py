@@ -176,11 +176,23 @@ class DiagnosticExecutionEngine:
         final_end: str,
     ) -> ProviderDiagnosticResult:
         baseline_observation, end_observation = pair
+        provider_files = _in_scope(files, capability)
         invalid = False
         try:
-            baseline = self._outcome(capability, request.workspace_id, baseline_revision, baseline_observation, files)
+            baseline = self._outcome(
+                capability,
+                request.workspace_id,
+                baseline_revision,
+                baseline_observation,
+                provider_files,
+            )
             end = self._outcome(
-                capability, request.workspace_id, final_end, end_observation, files, observed_revision=observed_end
+                capability,
+                request.workspace_id,
+                final_end,
+                end_observation,
+                provider_files,
+                observed_revision=observed_end,
             )
         except DiagnosticProviderError:
             baseline, end, invalid = None, None, True
