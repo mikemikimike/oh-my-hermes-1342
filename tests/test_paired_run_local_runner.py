@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-import subprocess
 from tempfile import TemporaryDirectory
 import textwrap
 import unittest
 
 from _cli_harness import run_cli
 from _local_package import load_local_package
+from _paired_run_local_support import FAKE_HERMES as _FAKE_HERMES
+from _paired_run_local_support import git as _git
 
 load_local_package()
 
@@ -25,39 +26,6 @@ from omh.quality.paired_run_model import (  # noqa: E402
     RunResultInput,
     TaskSpec,
 )
-
-
-_FAKE_HERMES = r"""
-#!/usr/bin/env python3
-import json
-from pathlib import Path
-import sys
-
-root = Path(sys.argv[0]).resolve().parent
-args = sys.argv[1:]
-with (root / "calls.jsonl").open("a", encoding="utf-8") as handle:
-    handle.write(json.dumps({"argv": args, "prompt": sys.stdin.read()}) + "\n")
-usage = Path(args[args.index("--usage-file") + 1])
-usage.write_text(json.dumps({
-    "provider": "fake-provider",
-    "model": args[args.index("--model") + 1],
-    "total_tokens": 3,
-    "estimated_cost_usd": 0.01,
-}), encoding="utf-8")
-print("completed")
-"""
-
-
-def _git(repo: Path, *argv: str) -> str:
-    return subprocess.run(
-        ["git", *argv],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    ).stdout.strip()
-
 
 class PairedRunLocalRunnerTests(unittest.TestCase):
     def test_preflight_refuses_digest_and_executor_before_any_child(self) -> None:
@@ -236,6 +204,35 @@ class PairedRunLocalRunnerTests(unittest.TestCase):
             self.assertFalse(
                 any(repo.parent.glob(f"{repo.name}-paired-run-*"))
             )
+            health_status, health_stdout, health_stderr = run_cli(
+                [
+                    "--omh-home",
+                    str(omh_home),
+                    "runtime",
+                    "health-summary",
+                    "--run-id",
+                    "decision-local-cli",
+                    "--json",
+                ],
+                output_json=False,
+            )
+            self.assertEqual(health_status, 0, health_stderr)
+            health = json.loads(health_stdout)
+            critical = health["critical_path_health"]
+            self.assertEqual(health["owner_attribution"]["owner"], "paired-run")
+            self.assertIsNotNone(critical["metrics"])
+            self.assertEqual(
+                {row["task_id"] for row in critical["task_revisions"]},
+                {
+                    cell["workspace_id"]
+                    for cell in execution["cells"]
+                }
+                | {
+                    f"{cell['workspace_id']}:cleanup"
+                    for cell in execution["cells"]
+                },
+            )
+            self.assertEqual(critical["privacy"], "metadata_only")
             persisted = "\n".join(
                 path.read_text(encoding="utf-8", errors="replace")
                 for path in omh_home.rglob("*")

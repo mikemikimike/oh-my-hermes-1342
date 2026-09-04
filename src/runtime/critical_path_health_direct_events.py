@@ -31,6 +31,14 @@ def read_direct_health_events(
         return ()
     if not path.exists():
         return None
+    return read_health_events_path(path, gaps)
+
+
+def read_health_events_path(
+    path: Path,
+    gaps: set[tuple[str, str]],
+) -> tuple[CriticalPathHealthEvent, ...]:
+    """Read one explicit lifecycle journal without projecting a partial file."""
     records, error = _read_bounded_event_records(path)
     if error:
         gaps.add(("", error))

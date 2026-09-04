@@ -42,11 +42,17 @@ class FanoutHealthEvents:
         revision: str,
         emit: Callable[[CriticalPathHealthEvent], None],
         clock: Callable[[], int],
+        executor: str = "fanout_dispatch",
+        model: str = "frozen_contract",
+        environment: str = "omh",
     ) -> None:
         self._fanout_id = fanout_id
         self._revision = revision
         self._emit = emit
         self._clock = clock
+        self._executor = executor
+        self._model = model
+        self._environment = environment
         self._tasks: dict[tuple[str, int], _Task] = {}
         self._finished: set[tuple[str, int]] = set()
         self._lock = Lock()
@@ -136,9 +142,9 @@ class FanoutHealthEvents:
                     event=event,
                     at_ms=at_ms,
                     revision=task.revision,
-                    executor="fanout_dispatch",
-                    model="frozen_contract",
-                    environment="omh",
+                    executor=self._executor,
+                    model=self._model,
+                    environment=self._environment,
                     dependencies=task.dependencies,
                     resource_class=task.resource_class,
                     phase=phase,

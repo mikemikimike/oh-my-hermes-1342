@@ -440,7 +440,7 @@ runs' health never turns into comparing two wall clocks. The validator
 re-derives every metric, the staleness verdict, the claim gate, the owner
 attribution, and the digest from the stored observations.
 
-### Asking the same question about a fan-out run
+### Asking the same question about a fan-out or paired run
 
 The input file above assumes someone already assembled one. A fan-out run can
 now record its own lifecycle while it dispatches, and the same command reads it
@@ -451,6 +451,7 @@ Agent/operator surfaces:
 ```sh
 omh coding fanout dispatch <fanout-id> --goal-file goal.txt --health-events
 omh runtime health-summary --run-id <fanout-id> [--json]
+omh runtime health-summary --run-id <paired-decision-id> [--json]
 ```
 
 `--health-events` is off unless typed, and `--no-health-events` states the
@@ -491,6 +492,15 @@ Three properties are worth knowing before quoting the numbers:
 - **The owner is recorded as `fanout`, deliberately.** This reads an aggregate,
   not one named executor's progress stream, so the committed section stays the
   only place its timings can be claimed from.
+
+Confirmed paired-run execution records the same bounded event schema
+automatically: every cell is queued before admission, starts after its
+global/executor/provider/shared-resource gates open, and finishes with its
+terminal state; worktree cleanup is a separate dependency-bound cleanup node.
+The aggregate identity is `paired_run` / `frozen_matrix`, while resource rows
+retain the recorded executor class. `--run-id <decision-id>` detects that
+journal and projects it without requiring a fan-out contract or a hand-authored
+intermediate file.
 
 ## Reviewing the integrated result, in four lanes at once
 
@@ -557,6 +567,12 @@ Git or child execution rather than silently substituted. Those executors use
 the same public runner boundary when a caller supplies an adapter capable of
 returning the authenticated receipt contract. This is an explicit capability
 boundary, not a default-to-Hermes rule.
+
+Each confirmed run also writes bounded metadata-only critical-path events under
+the paired decision id. The same `omh runtime health-summary --run-id
+<decision-id>` surface therefore reports observed queueing, execution, and
+cleanup timing for evaluation cells directly; no task body or child output is
+part of that journal.
 
 The plan is derived from the frozen decision, never from CLI overrides. Arms,
 tasks, executors, models, and the maximum dispatch seconds come out of the

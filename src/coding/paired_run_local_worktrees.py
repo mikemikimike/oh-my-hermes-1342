@@ -7,7 +7,10 @@ from pathlib import Path
 from threading import Lock
 
 from ..quality.paired_run_model import PairedRunDecision
+from ..runtime.critical_path_health_models import CriticalPathTerminalStatus
 from .fanout_dispatch import signal_safe_unit_runner
+from .fanout_health_events import FanoutHealthEvents, monotonic_milliseconds
+from .paired_run_health_events import write_paired_run_health_event
 from .paired_run_dispatch_model import PairedRunDispatchCell, PairedRunDispatchPlan
 from .paired_run_execution import execute_paired_run_plan
 from .paired_run_execution_model import (
@@ -31,17 +34,39 @@ def execute_local_paired_plan(
     """Execute each frozen cell from a distinct detached checkout."""
     worktrees: dict[str, Path] = {}
     worktree_lock = Lock()
+    health = FanoutHealthEvents(
+        fanout_id=plan.decision_id,
+        revision=decision.execution_revision,
+        emit=lambda event: write_paired_run_health_event(
+            config.paths,
+            plan.decision_id,
+            event,
+        ),
+        clock=monotonic_milliseconds,
+        executor="paired_run",
+        model="frozen_matrix",
+        environment="omh",
+    )
+    for cell in plan.cells:
+        health.queued(
+            cell.workspace_id,
+            dependencies=(),
+            resource_class=cell.executor,
+        )
 
     def workspace_factory(cell: PairedRunDispatchCell) -> PairedRunWorkspace:
         path = (
             config.repo_root.parent
             / f"{config.repo_root.name}-{cell.workspace_id}"
         )
+        health.started(cell.workspace_id)
         if path.exists():
+            health.finished(cell.workspace_id, terminal_status="failed")
             raise PairedRunWorkspaceFailure("paired-run worktree already exists")
         if _add_worktree(
             config.repo_root, path, cell.execution_revision
         ) != 0:
+            health.finished(cell.workspace_id, terminal_status="failed")
             raise PairedRunWorkspaceFailure("paired-run worktree creation failed")
         with worktree_lock:
             worktrees[cell.workspace_id] = path
@@ -55,14 +80,23 @@ def execute_local_paired_plan(
             path = worktrees.get(workspace.workspace_id)
         if path is None or workspace.workspace_id != cell.workspace_id:
             raise PairedRunRunnerFailure("paired-run workspace identity mismatch")
-        return run_hermes_paired_cell(
-            plan.decision_id,
-            cell,
-            contents[cell.task_id],
-            path,
-            decision,
-            config,
+        try:
+            outcome = run_hermes_paired_cell(
+                plan.decision_id,
+                cell,
+                contents[cell.task_id],
+                path,
+                decision,
+                config,
+            )
+        except PairedRunRunnerFailure:
+            health.finished(cell.workspace_id, terminal_status="failed")
+            raise
+        health.finished(
+            cell.workspace_id,
+            terminal_status=_health_status(outcome),
         )
+        return outcome
 
     def cleaner(
         cell: PairedRunDispatchCell,
@@ -72,8 +106,22 @@ def execute_local_paired_plan(
             path = worktrees.pop(workspace.workspace_id, None)
         if path is None or workspace.workspace_id != cell.workspace_id:
             raise PairedRunCleanupFailure("paired-run workspace identity mismatch")
+        cleanup_id = f"{cell.workspace_id}:cleanup"
+        health.queued(
+            cleanup_id,
+            dependencies=(cell.workspace_id,),
+            resource_class="cleanup",
+            phase="cleanup",
+        )
+        health.started(cleanup_id, phase="cleanup")
         removed = _remove_worktree(config.repo_root, path)
-        return removed == 0 and not path.exists()
+        cleaned = removed == 0 and not path.exists()
+        health.finished(
+            cleanup_id,
+            terminal_status="succeeded" if cleaned else "failed",
+            phase="cleanup",
+        )
+        return cleaned
 
     return execute_paired_run_plan(
         plan,
@@ -92,6 +140,16 @@ def _add_worktree(repo: Path, path: Path, revision: str) -> int:
         timeout=120,
     )
     return int(completed.returncode)
+
+
+def _health_status(
+    outcome: PairedRunExecutionOutcome,
+) -> CriticalPathTerminalStatus:
+    if outcome.state.value == "succeeded":
+        return "succeeded"
+    if outcome.state.value == "cancelled":
+        return "cancelled"
+    return "failed"
 
 
 def _remove_worktree(repo: Path, path: Path) -> int:
