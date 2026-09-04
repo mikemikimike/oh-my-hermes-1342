@@ -7,6 +7,8 @@ once under both unittest discovery and pytest.
 
 from __future__ import annotations
 
+import copy
+
 from _local_package import load_local_package
 
 load_local_package()
@@ -66,14 +68,47 @@ class WorkArtifactShowShapeActionTests(WorkArtifactShapeSessionPayloads):
         self.assertTrue(shape["legend"])
         self.assertIn("not", shape["claim_boundary"])
 
+    def test_every_recorded_briefing_artifact_has_a_traceable_shape(self) -> None:
+        prompt_status = self._status_payload(prompt_handoff=PROMPT_HANDOFF)
+        briefing = copy.deepcopy(prompt_status["coding_briefing"])
+        briefing["run_id"] = "run-shape"
+        run_status = self._status_payload(
+            prompt_handoff=PROMPT_HANDOFF,
+            briefing=briefing,
+        )
+        cases = (
+            (prompt_status, "handoff_prompt", "ownership", "coding_prompt_handoff/v1"),
+            (prompt_status, "acceptance_and_verification", "flow", "coding_briefing/v1"),
+            (prompt_status, "status_brief", "state", "coding_briefing/v1"),
+            (prompt_status, "evidence_gaps", "state", "coding_briefing/v1"),
+            (prompt_status, "next_action", "ownership", "coding_briefing/v1"),
+            (run_status, "issue_pr_followup", "flow", "coding_briefing/v1"),
+        )
+
+        for status, artifact_id, lens, source_schema in cases:
+            with self.subTest(artifact_id=artifact_id, lens=lens):
+                result = build_work_artifact_show_shape_action(
+                    status,
+                    artifact_id=artifact_id,
+                    lens=lens,
+                )
+                shape = result["shape"]
+                self.assertIsInstance(shape, dict)
+                self.assertEqual(shape["availability"], "available")
+                self.assertEqual(shape["source_schema"], source_schema)
+                self.assertEqual(shape["evidence_state"], "prepared_not_observed")
+                self.assertTrue(shape["nodes"])
+                self.assertTrue(
+                    all(node["source_refs"] for node in shape["nodes"])
+                )
+                self.assertTrue(
+                    all(edge["source_refs"] for edge in shape["edges"])
+                )
+
     def test_missing_artifact_lens_format_and_schema_return_unavailable(self) -> None:
         # Given a runtime handoff session, a prompt-only session, and an empty one.
         runtime_status = self._status_payload(
             runtime_handoff=self._runtime_handoff_status()
-        )
-        prompt_only = self._status_payload(
-            runtime_handoff=None,
-            prompt_handoff=PROMPT_HANDOFF,
         )
         empty = {
             "schema_version": "wrapper_session_result/v1",
@@ -97,12 +132,6 @@ class WorkArtifactShowShapeActionTests(WorkArtifactShapeSessionPayloads):
         bad_format = build_work_artifact_show_shape_action(
             runtime_status, artifact_id="handoff_prompt", format="svg"
         )
-        prompt_schema = build_work_artifact_show_shape_action(
-            prompt_only, artifact_id="handoff_prompt"
-        )
-        brief_schema = build_work_artifact_show_shape_action(
-            runtime_status, artifact_id="status_brief"
-        )
 
         # Then every case is an explicit unavailable shape, never a guess.
         for result, reason in (
@@ -111,8 +140,6 @@ class WorkArtifactShowShapeActionTests(WorkArtifactShapeSessionPayloads):
             (bad_lens, "unsupported_lens"),
             (change_lens, "lens_not_supported_for_source_schema"),
             (bad_format, "unsupported_format"),
-            (prompt_schema, "unsupported_source_schema"),
-            (brief_schema, "unsupported_source_schema"),
         ):
             self.assertEqual(result["action"], SHOW_SHAPE_ACTION)
             self.assertEqual(result["next_action"], "show_status")
@@ -121,11 +148,8 @@ class WorkArtifactShowShapeActionTests(WorkArtifactShapeSessionPayloads):
             self.assertEqual(shape["availability"], "unavailable")
             self.assertEqual(shape["reason"], reason)
             self.assertEqual(shape["body"], "")
-        prompt_shape = prompt_schema["shape"]
         change_shape = change_lens["shape"]
-        self.assertIsInstance(prompt_shape, dict)
         self.assertIsInstance(change_shape, dict)
-        self.assertEqual(prompt_shape["source_schema"], "")
         self.assertEqual(change_shape["evidence_state"], "prepared_not_observed")
 
     def test_mermaid_requires_observed_capability(self) -> None:

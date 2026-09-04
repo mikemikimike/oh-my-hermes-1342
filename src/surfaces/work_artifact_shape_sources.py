@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from .work_artifact_briefing_shapes import briefing_shape_source
 from .work_artifact_copy import _ARTIFACT_IDS
 
 
@@ -32,17 +33,23 @@ def work_artifact_shape_sources(
     its exact schema so the facade, not this module, reports it unsupported.
     """
 
-    handoff = _first_mapping(runtime_handoff, prompt_handoff)
     prefix_session = session_id or str(briefing.get("session_id", ""))
     sources: dict[str, Mapping[str, object] | None] = {}
     for artifact_id in _ARTIFACT_IDS:
         if artifact_id == "handoff_prompt":
-            sources[artifact_id] = (
-                _handoff_shape_source(prefix_session, handoff) if handoff else None
-            )
+            if runtime_handoff:
+                sources[artifact_id] = _handoff_shape_source(
+                    prefix_session, runtime_handoff
+                )
+            elif prompt_handoff:
+                sources[artifact_id] = _prompt_handoff_shape_source(
+                    prefix_session, prompt_handoff
+                )
+            else:
+                sources[artifact_id] = None
         else:
             sources[artifact_id] = (
-                _briefing_shape_source(artifact_id, prefix_session, briefing)
+                briefing_shape_source(artifact_id, prefix_session, briefing)
                 if briefing
                 else None
             )
@@ -126,21 +133,41 @@ def _handoff_shape_source(
     }
 
 
-def _briefing_shape_source(
-    artifact_id: str, session_id: str, briefing: Mapping[str, object]
+def _prompt_handoff_shape_source(
+    session_id: str, handoff: Mapping[str, object]
 ) -> dict[str, object]:
-    """The briefing-backed artifacts carry the briefing's exact schema.
-
-    The committed facade does not support the briefing schema, so these sources
-    render unavailable rather than being re-labeled with a schema they do not
-    have.
-    """
-
+    owner = str(handoff.get("selected_executor_profile", ""))
+    prefix = f"{session_id}#prompt_handoff"
+    nodes = [
+        _shape_node(
+            "handoff",
+            "Prepared handoff",
+            (f"{prefix}.schema_version",),
+            state="prepared_not_observed",
+            owner=owner,
+        ),
+        _shape_node(
+            "executor",
+            "Selected executor",
+            (f"{prefix}.selected_executor_profile",),
+            state="prepared_not_observed",
+            owner=owner,
+        ),
+    ]
     return {
-        "source_artifact_id": f"{session_id}#{artifact_id}",
-        "source_schema": str(briefing.get("schema_version", "")),
+        "source_artifact_id": prefix,
+        "source_schema": str(handoff.get("schema_version", "")),
         "evidence_state": "prepared_not_observed",
-        "nodes": [],
+        "nodes": nodes,
+        "edges": [
+            _shape_edge(
+                "handoff",
+                "executor",
+                (f"{prefix}.selected_executor_profile",),
+                "targets",
+            )
+        ],
+        "bullets": [],
     }
 
 
@@ -166,13 +193,6 @@ def _shape_edge(
         "source_refs": list(refs),
         "label": label,
     }
-
-
-def _first_mapping(*values: Mapping[str, object] | None) -> Mapping[str, object]:
-    for value in values:
-        if isinstance(value, dict) and value:
-            return value
-    return {}
 
 
 def _mapping(value: object) -> Mapping[str, object]:

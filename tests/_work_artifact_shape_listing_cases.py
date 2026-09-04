@@ -34,8 +34,8 @@ class WorkArtifactShapeListingTests(WorkArtifactShapeSessionPayloads):
         # When the copy action lists the work artifacts.
         listing = build_work_artifact_copy_action(status)
 
-        # Then every entry advertises its shape, and only the handoff artifact
-        # carries a facade-supported source schema.
+        # Then every recorded entry advertises the lenses its persisted fields
+        # can support without changing copy availability.
         self.assertEqual(listing["action"], "list_work_artifacts")
         self.assertEqual(listing["next_action"], "show_status")
         by_id = {str(entry["artifact_id"]): entry for entry in listing["artifacts"]}
@@ -46,19 +46,19 @@ class WorkArtifactShapeListingTests(WorkArtifactShapeSessionPayloads):
             handoff_shape["lenses"],
             ["flow", "structure", "state", "ownership"],
         )
-        for artifact_id in (
-            "acceptance_and_verification",
-            "status_brief",
-            "evidence_gaps",
-            "next_action",
-            "issue_pr_followup",
-        ):
+        for artifact_id in ("status_brief", "evidence_gaps", "next_action"):
+            self.assertEqual(
+                by_id[artifact_id]["shape"]["availability"],
+                "available",
+            )
+            self.assertTrue(by_id[artifact_id]["shape"]["lenses"])
+        for artifact_id in ("acceptance_and_verification", "issue_pr_followup"):
             self.assertEqual(
                 (
                     by_id[artifact_id]["shape"]["availability"],
                     by_id[artifact_id]["shape"]["reason"],
                 ),
-                ("unavailable", "unsupported_source_schema"),
+                ("unavailable", "source_not_recorded"),
             )
             self.assertEqual(by_id[artifact_id]["shape"]["lenses"], [])
         # Copy availability stays independent of shape availability: the
