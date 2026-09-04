@@ -185,7 +185,11 @@ def add_coding_paired_run_command(coding_sub: argparse._SubParsersAction[argpars
     )
     dispatch.add_argument("--decision", required=True, help="Path to a paired_run_decision/v1 document.")
     dispatch.add_argument("--dry-run", action="store_true", help="Build and print the inert plan without launching any runner.")
-    dispatch.add_argument("--confirm-dispatch", action="store_true", help="Explicitly authorize handoff to the injected local runner boundary.")
+    dispatch.add_argument(
+        "--confirm-dispatch",
+        action="store_true",
+        help="Explicitly authorize the configured local runner adapter.",
+    )
     dispatch.add_argument(
         "--task-file",
         action="append",
