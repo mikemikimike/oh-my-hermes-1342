@@ -313,6 +313,44 @@ It is read-only in both directions: it starts nothing and writes nothing. Plain
 text is the default and prints the claim support next to the verdict, so the
 line a reader quotes already says what the check does not settle.
 
+### Running that check right after a unit goes GREEN
+
+The record above needs someone to supply an observation. Fan-out dispatch can
+now ask for one at the single moment it is worth the most, right after a unit's
+verification passed, without changing what that pass means.
+
+Agent/operator surface:
+
+```sh
+omh coding fanout dispatch <fanout-id> --goal-file goal.txt \
+  --run-verification --diagnostics
+```
+
+`--no-diagnostics` is the default, and typing the flag is only half of the
+boundary. `--diagnostics` requires an injected diagnostic execution engine; the
+CLI refuses the run when none was supplied, because OMH installs no language
+server, starts no provider process, and opens no socket. A caller that already
+runs a provider itself supplies the engine and gets the bounded, allowlisted,
+serial scheduling described above; everyone else gets a clear refusal instead
+of a silent skip.
+
+Four conditions gate each unit's check, and all four must hold:
+
+| Condition | Why |
+| --- | --- |
+| the engine is present and enabled | nothing is inferred from the flag alone |
+| the unit's verification passed | a diagnostic pass on a red unit answers a question nobody asked |
+| producer evidence exists | the unit's own result has to be attributable first |
+| both revisions are fixed 40-hex Git object identities | a check "at HEAD" is stale by construction, so it never runs here |
+
+What lands on the unit entry is metadata: a `diagnostic_status` of `observed`
+or `held`, the engine's own execution status, and one
+`language_diagnostic:<record_id>` reference per
+`language_diagnostic_evidence/v1` record. Nothing else moves. A held or
+non-clean diagnostic outcome does not fail the unit, does not reopen
+verification, and does not change the unit's rung on the evidence ladder. It is
+an observation recorded next to the result, not a gate in front of it.
+
 ## Why is this run unhealthy
 
 A status board says what is happening. It does not say why a run is slow,
@@ -402,6 +440,190 @@ runs' health never turns into comparing two wall clocks. The validator
 re-derives every metric, the staleness verdict, the claim gate, the owner
 attribution, and the digest from the stored observations.
 
+### Asking the same question about a fan-out run
+
+The input file above assumes someone already assembled one. A fan-out run can
+now record its own lifecycle while it dispatches, and the same command reads it
+back by id.
+
+Agent/operator surfaces:
+
+```sh
+omh coding fanout dispatch <fanout-id> --goal-file goal.txt --health-events
+omh runtime health-summary --run-id <fanout-id> [--json]
+```
+
+`--health-events` is off unless typed, and `--no-health-events` states the
+default explicitly. When it is on, dispatch appends bounded metadata-only
+lifecycle observations to the run's own
+`critical_path_health_events.jsonl` inside that fan-out's contract directory:
+queued, started, and finished marks for units, retries, verification, and the
+review phase. Each event carries a task id, its dependencies, a resource class,
+a phase, the observed stage revision, a retry counter, a monotonic millisecond
+stamp, and, on a finished event, a terminal status from a closed vocabulary.
+Executor, model, and environment identify the aggregate projector
+(`fanout_dispatch`, `frozen_contract`, `omh`); they do not infer which provider
+caused a delay. There is no prompt, output, path, or free text in the journal.
+
+`--run-id` then projects that journal into a committed `critical_path_health/v1`
+section and upgrades the record to `run_health_summary/v2`. The section reports
+wall-clock, active, queue, and critical-path milliseconds, peak concurrency,
+overlap savings, repeated cost, stale count, cleanup tail, and reused task
+count, and it carries `privacy: "metadata_only"`. `--input` still reads a
+`run_health_input/v1` or `/v2` file for callers that assemble one themselves,
+and the two flags are mutually exclusive.
+
+Three properties are worth knowing before quoting the numbers:
+
+- **The typed journal wins, and its absence is not an error.** A run dispatched
+  without `--health-events` has no journal, so the projector falls back to the
+  observation journal it already keeps. Dispatch is the only timestamped
+  process-start evidence there, so a fallback projection is coarser by
+  construction.
+- **An unreconcilable lifecycle reports gaps, not metrics.** A dependency cycle
+  or an out-of-order dependency leaves `metrics` as `null` and lists explicit
+  `evidence_gaps` entries naming the task and the reason. A malformed or
+  hand-edited journal line does the same. The projection would rather say what
+  it could not reconcile than average its way past it.
+- **The owner is recorded as `fanout`, deliberately.** This reads an aggregate,
+  not one named executor's progress stream, so the committed section stays the
+  only place its timings can be claimed from.
+
+## Reviewing the integrated result, in four lanes at once
+
+A unit passing its own verification says nothing about the combination. The
+final-review wave is the shape for reviewing what integration produced, and its
+point is that four reviewers looking at four different things cannot quietly
+look at four different revisions.
+
+Four lenses are declared in a fixed reporting order: `requirement`, `quality`,
+`safety`, `real_surface`. They run concurrently within the configured limits,
+and every lane is bound read-only to one immutable 40-hex integrated revision.
+A lane that mutates anything, or that reports an observation from any other
+revision, is refused rather than merged into the aggregate.
+
+The wave reduces to exactly three verdicts:
+
+| Verdict | When |
+| --- | --- |
+| `PASS` | integration is green, producer evidence exists, and every lane completed at that exact revision |
+| `HOLD` | integration is not green, producer evidence is missing, or a lane has not finished yet |
+| `BLOCK` | the revision is not immutable, a lane drifted off it, mutated, went missing, went stale, failed, timed out, or was cancelled |
+
+The verdict is derived from lane states in lens order, so the blocking lens is
+named rather than guessed, and remediation invalidates the wave instead of
+patching a stale lane back into a pass. Two boundaries follow. A `PASS` is
+review evidence at one revision and nothing more: it is not CI, not
+merge-readiness, and not merge, and no OMH command merges anything. And the
+wave engine is injected in-process by its caller today, so there is no
+`fanout dispatch` flag that turns it on. Support here differs by surface, and
+that gap is a capability boundary, not an implied feature.
+
+## Dispatching a committed paired-run decision
+
+Comparing two arms, a baseline and a variant, across a task matrix is easy to
+turn into a machine that quietly launches things. This surface is built so that
+it cannot.
+
+Operator/maintainer surface. Normal users never touch it; they describe the
+comparison they want to Hermes.
+
+```sh
+omh coding paired-run dispatch --decision decision.json --dry-run
+omh coding paired-run dispatch --decision decision.json --confirm-dispatch
+```
+
+`--dry-run` parses a committed `paired_run_decision/v1` document, builds the
+plan, prints it, and launches nothing. Without `--dry-run`, dispatch refuses
+unless `--confirm-dispatch` is typed. Even then it refuses again unless a local
+runner boundary was injected by the caller: this command starts no process on
+its own. Two explicit gates and an injected runner is the whole entry path.
+
+The plan is derived from the frozen decision, never from CLI overrides. Arms,
+tasks, executors, models, and the maximum dispatch seconds come out of the
+parsed document, so an operator cannot widen a committed comparison from the
+command line. What the payload states:
+
+- **Isolation.** Each cell gets its own workspace id, plus the shared-resource
+  mode, the shared-resource keys in play, and the launch waves those keys force.
+  Cells that contend serialize into separate waves rather than racing.
+- **Budgets.** Global, per-executor, and per-provider concurrency, plus local
+  and provider cost/time bounds. Serial and parallel runs of the same matrix
+  stay scope-equivalent; parallelism changes the peaks, not what each cell may
+  touch.
+- **The boundary itself.** `local_runner_boundary` records that a confirmed
+  dispatch requires the injected runner and that `paired_run_decision/v1`
+  carries no raw task content.
+
+Evidence closes the loop in one direction only. An execution matrix becomes an
+observed decision through an authenticated receipt fan-in, and every cell must
+present a verified receipt bound to its own task, arm, and scope. Missing,
+stale, mismatched, unauthenticated, partial, timed-out, cancelled, crashed,
+rate-limited, and cleanup-failed cells each block the fan-in rather than
+degrading it to a weaker result. Behavioral verdicts stay explicit request
+values: an exit code, a process status, or anything the child printed never
+decides behavior.
+
+## Showing the shape of one prepared artifact
+
+A prepared handoff, plan, status, or review can be a wall of structured text.
+The common facade has typed projectors for those registered schema families.
+The observed persisted wrapper path currently supplies a runtime-handoff
+source; other selected wrapper artifacts remain unavailable until their own
+structured source projectors are registered rather than relabeled. The shape
+view answers "what does this supported source look like" without pasting the
+artifact into chat.
+
+People stay in chat and ask Hermes about the work it prepared. The projection
+is a wrapper-facing selected action, so a wrapper that wires it can answer that
+question with a picture; what is observed today is the agent/operator command
+below reaching the same action:
+
+```sh
+omh runtime artifacts show-shape --artifact-id <id> --lens flow --json
+```
+
+`--artifact-id` is the stable id the selected work-artifact action already
+hands back. `--session-id` is optional: without it, the command picks the most
+recently updated current wrapper session that contains that stable id, with the
+session id as the tiebreak so the selection is deterministic. The closed lens
+vocabulary is `flow`, `structure`, `change`, `state`, and `ownership`; each
+source schema exposes only the subset its recorded fields can support.
+`--format` defaults to `ascii`.
+
+**Every node and edge cites its source.** The projection reads recorded fields
+and renders them; it infers no relationship that the source did not state, and
+a node or edge without source refs does not get drawn. Bullets and graph size
+are bounded, and what got cut is reported as explicit omissions rather than
+silently dropped.
+
+**Unavailable is a first-class answer with a reason.** The rendering facade is
+the single availability authority, so each of these comes back as
+`availability: "unavailable"`, a named reason, and an empty body:
+
+| Reason | Means |
+| --- | --- |
+| `unknown_artifact_id` | no artifact in the session carries that id |
+| `source_not_recorded` | the artifact exists in the index but its source was never recorded |
+| `unsupported_lens` / `unsupported_format` | the requested lens or format is outside the closed vocabulary |
+| `unsupported_source_schema` | the selected artifact has no registered structured projector |
+| `lens_not_supported_for_source_schema` | the schema is known but its fields cannot support that lens |
+| `format_requires_change_lens` | `--format diff` was asked for on a lens other than `change` |
+| `mermaid_capability_not_observed` | Mermaid was requested where no Mermaid capability has been observed |
+| `render_budget_exhausted` | the bounded body would have exceeded its character budget |
+
+Mermaid is the one worth stating twice. It is never enabled by a flag being
+present or by a CLI being able to spell it; it stays unavailable until a
+capability is actually observed, so a diagram is never claimed for a surface
+that cannot render one.
+
+The result carries the artifact's own `evidence_state`, so a shape rendered
+from a prepared handoff reads `prepared_not_observed` on its face. The action
+leaves `next_action` at `show_status`: looking at a shape never advances the
+session toward dispatch, and an `unchanged` change marker reports only that the
+supplied source carried no observed change marker, not that two sources are
+equal.
+
 ## Boundary
 
 A status board is observed activity metadata. It is not result, verification,
@@ -420,3 +642,20 @@ events and settles none of them. It is metadata-only observation, not execution,
 verification, review, CI, merge-readiness, or merge evidence, and an `improved`
 efficiency claim on one is a comparison a named evaluator made against a named
 baseline — not a measurement OMH performed.
+
+A critical-path health section is the same claim with timings attached. It
+describes how a recorded lifecycle laid out in time, and `null` metrics beside
+listed evidence gaps are its honest answer, not a degraded one.
+
+A final-review verdict covers one immutable revision through four read-only
+lenses. `PASS` is review evidence at that revision; it is not CI, not
+merge-readiness, not merge, and nothing in OMH merges a branch.
+
+A paired-run plan is prepared intent. `--dry-run` output describes cells that
+have not launched, and a confirmed dispatch is still only what an injected local
+runner did, attested by receipts, over one committed decision. It is not a
+general quality claim about either arm.
+
+An artifact shape is a picture of recorded fields. It projects what a source
+stated, and it settles nothing about whether that source was dispatched, run,
+verified, reviewed, merged, or read by anyone.
