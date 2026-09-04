@@ -125,28 +125,28 @@ class LocalDiagnosticProviderRunner:
             daemon=True,
         )
         watcher.start()
+        cleanup_signal = signal.SIGTERM
+        process_group_clean = False
         try:
             try:
                 process.wait(timeout=timeout_ms / 1000)
             except subprocess.TimeoutExpired:
-                terminate_process_group(
-                    process,
-                    _TERMINATE_GRACE_SECONDS,
-                    signal.SIGTERM,
-                )
                 raise
             except KeyboardInterrupt:
-                terminate_process_group(
-                    process,
-                    _TERMINATE_GRACE_SECONDS,
-                    signal.SIGTERM,
-                )
+                cleanup_signal = signal.SIGINT
                 raise
         finally:
             stopped.set()
-            watcher.join(timeout=1)
+            watcher.join(timeout=3)
+            _signals, process_group_clean = terminate_process_group(
+                process,
+                _TERMINATE_GRACE_SECONDS,
+                cleanup_signal,
+            )
             stdout_capture = stdout.finish(1)
             stderr_capture = stderr.finish(1)
+        if not process_group_clean:
+            return ProviderObservation.crashed()
         if cancelled_during_run.is_set() or (
             cancelled is not None and cancelled.is_set()
         ):

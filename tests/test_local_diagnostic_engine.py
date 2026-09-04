@@ -242,6 +242,5 @@ class LocalDiagnosticEngineTests(unittest.TestCase):
         executable.chmod(0o755)
         return executable
 
-
 if __name__ == "__main__":
     unittest.main()

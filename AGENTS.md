@@ -142,8 +142,9 @@ PR without the chat history.
   adapter discovers supported binaries from `PATH`, passes no shell text or
   user-selected executable, materializes detached fixed-revision worktrees,
   strips messages and absolute paths, redacts the child environment, caps
-  concurrency/time/output, and removes every temporary worktree. No provider
-  is installed or started unless the operator types the flag.
+  concurrency/time/output, always reaps the provider's complete process tree,
+  and removes every temporary worktree. No provider is installed or started
+  unless the operator types the flag.
 - No Hermes core patching.
 - Runtime artifacts are local, deterministic, schema-versioned, and
   metadata-only by default.

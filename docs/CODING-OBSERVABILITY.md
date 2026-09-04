@@ -341,8 +341,10 @@ bound. OMH materializes each fixed revision in a detached temporary worktree
 and runs only the provider's fixed argv template. Global concurrency is two and
 per-provider concurrency is one; the pyright-family providers are marked
 stateful and serialized across overlapping requests. Each process has the
-provider timeout, a process-group cancellation path, an allowlisted
-environment with credentials removed, and hard-capped stdout/stderr drainers.
+provider timeout, an allowlisted environment with credentials removed, and
+hard-capped stdout/stderr drainers. The owned process group/tree is always
+terminated and reaped after the provider leader exits, including exit zero;
+an unproved cleanup becomes a crashed observation rather than clean evidence.
 Provider messages, snippets, stderr, absolute paths, and raw JSON are discarded
 after normalization. The temporary revision worktree is removed before the
 observation returns, and a moved or dirty execution checkout becomes stale
