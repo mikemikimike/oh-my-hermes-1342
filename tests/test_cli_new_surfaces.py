@@ -169,6 +169,13 @@ class FanoutDiagnosticsCliTests(unittest.TestCase):
         self.assertTrue(build_parser().parse_args([*base, "--diagnostics"]).diagnostics)
         self.assertFalse(build_parser().parse_args([*base, "--no-diagnostics"]).diagnostics)
 
+    def test_health_events_are_explicitly_opt_in_and_can_be_disabled(self) -> None:
+        base = ["coding", "fanout", "dispatch", "fanout-1", "--goal-file", "goal.txt"]
+
+        self.assertFalse(build_parser().parse_args(base).health_events)
+        self.assertTrue(build_parser().parse_args([*base, "--health-events"]).health_events)
+        self.assertFalse(build_parser().parse_args([*base, "--no-health-events"]).health_events)
+
 
 class PairedRunDispatchCliTests(unittest.TestCase):
     def _decision_path(self, root: Path) -> Path:

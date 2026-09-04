@@ -2149,6 +2149,7 @@ def cmd_coding_fanout_dispatch(
             goal_attempt_progressed=bool(args.goal_attempt_progressed),
             review_dispatch_budget=args.review_dispatch_budget,
             diagnostic_engine=selected_diagnostic_engine,
+            emit_health_events=bool(args.health_events),
             **recovery_kwargs,
         )
         _print_json(summary)
@@ -2191,6 +2192,7 @@ def cmd_coding_fanout_dispatch(
             goal_attempt_progressed=bool(args.goal_attempt_progressed),
             review_dispatch_budget=args.review_dispatch_budget,
             diagnostic_engine=selected_diagnostic_engine,
+            emit_health_events=bool(args.health_events),
             **recovery_kwargs,
         )
     except ValueError as exc:
@@ -2701,6 +2703,20 @@ def _add_coding_commands(sub) -> None:
         help="Disable the optional post-GREEN diagnostic hook (the default).",
     )
     fanout_dispatch.set_defaults(diagnostics=False)
+    health_events = fanout_dispatch.add_mutually_exclusive_group()
+    health_events.add_argument(
+        "--health-events",
+        dest="health_events",
+        action="store_true",
+        help="Emit bounded metadata-only critical-path lifecycle evidence.",
+    )
+    health_events.add_argument(
+        "--no-health-events",
+        dest="health_events",
+        action="store_false",
+        help="Disable critical-path lifecycle evidence emission (the default).",
+    )
+    fanout_dispatch.set_defaults(health_events=False)
     fanout_dispatch.add_argument(
         "--integration-worktree",
         default="",

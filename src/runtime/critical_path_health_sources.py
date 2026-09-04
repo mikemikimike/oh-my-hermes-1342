@@ -10,6 +10,7 @@ from ..coding.fanout_journal import FanoutJournalError, read_fanout_run_journal
 from ..system.paths import OmhPaths
 from ..workflows.observation_journal import read_observation_events_result, validate_observation_event
 from .critical_path_health import project_critical_path_health
+from .critical_path_health_direct_events import read_direct_health_events
 from .critical_path_health_models import (
     CRITICAL_PATH_HEALTH_SCHEMA_VERSION,
     CriticalPathEvidenceGap,
@@ -51,6 +52,9 @@ def project_fanout_critical_path_health(paths: OmhPaths, fanout_id: str) -> Crit
     if not revision:
         gaps.add(("", "missing_revision"))
     rows = _journal_rows(journal, units, order, gaps)
+    direct_events = read_direct_health_events(paths, fanout_id, gaps)
+    if direct_events is not None:
+        return _result(fanout_id, direct_events, gaps)
     observations = _observations(paths, gaps)
     events: list[CriticalPathHealthEvent] = []
     for unit_id, unit in units.items():

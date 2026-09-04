@@ -78,6 +78,11 @@ from .fanout_admission import AdaptiveFanoutAdmission
 from .fanout_artifact_sharing import plan_and_link_shared_artifacts
 from .fanout_diagnostics_hook import run_post_green_diagnostics
 from .fanout_final_review_hook import FinalReviewWaveEngine, run_final_review_after_integration
+from .fanout_health_events import (
+    FanoutHealthEvents,
+    monotonic_milliseconds,
+    write_fanout_health_event,
+)
 from .diagnostic_execution import DiagnosticExecutionEngine
 from .fanout_contracts import (
     FANOUT_CLAIM_BOUNDARY,
@@ -1607,6 +1612,8 @@ def dispatch_fanout(
     review_dispatch_budget: int = 1,
     diagnostic_engine: DiagnosticExecutionEngine | None = None,
     final_review_engine: FinalReviewWaveEngine | None = None,
+    emit_health_events: bool = False,
+    health_clock: Callable[[], int] = monotonic_milliseconds,
 ) -> dict[str, Any]:
     # The spawn guard runs before every other check, including the two
     # boundary re-checks below: it is the only one whose whole job is that no
@@ -1669,6 +1676,16 @@ def dispatch_fanout(
     # Resolved up here rather than beside the summary write below: the dispatch
     # loop needs it to write per-unit in-flight markers while units are running.
     fanout_id = str(contract.get("fanout_id", "") or "")
+    health_events = (
+        FanoutHealthEvents(
+            fanout_id=fanout_id,
+            revision=base_sha,
+            emit=lambda event: write_fanout_health_event(paths, fanout_id, event),
+            clock=health_clock,
+        )
+        if emit_health_events and fanout_id
+        else None
+    )
     review_budget = ReviewDispatchBudget(
         paths=paths,
         fanout_id=fanout_id,
@@ -1840,6 +1857,7 @@ def dispatch_fanout(
         # One caller-owned engine carries its cache and single-flight identity
         # across every eligible unit in this dispatch.
         "diagnostic_engine": diagnostic_engine,
+        "health_events": health_events,
     }
 
     def _dispatch_with_owner_gate(unit: Mapping[str, Any], **kwargs: Any) -> dict[str, Any]:
@@ -1850,10 +1868,14 @@ def dispatch_fanout(
             return _skipped(unit, "interrupted")
         gate = owner_gates.get(str(unit.get("owner") or "choose"))
         if gate is None:
+            if health_events is not None:
+                health_events.started(str(unit["unit_id"]))
             return _dispatch_unit(paths, unit, **kwargs)
         with gate:
             if _INTERRUPT_FLAG.is_set():
                 return _skipped(unit, "interrupted")
+            if health_events is not None:
+                health_events.started(str(unit["unit_id"]))
             return _dispatch_unit(paths, unit, **kwargs)
 
     # SIGTERM must not orphan the spawned agent CLIs (OMO's launcher
@@ -1885,6 +1907,12 @@ def dispatch_fanout(
         # contract never promised. `merge_order`'s wave grouping is
         # informational from here on; admission is per-completion.
         def _submit(unit_id: str) -> None:
+            if health_events is not None:
+                health_events.queued(
+                    unit_id,
+                    dependencies=tuple(str(dep) for dep in units[unit_id].get("depends_on", []) or []),
+                    resource_class=str(units[unit_id].get("owner") or "choose"),
+                )
             futures[unit_id] = pool.submit(
                 _dispatch_with_owner_gate,
                 units[unit_id],
@@ -2056,15 +2084,34 @@ def dispatch_fanout(
             and all(_producer_verification_is_sufficient(entry) for entry in producer_results.values())
             and _integrated_checkout_contains_producer_heads(runner, integrated_worktree, producer_results)
         )
+        integration_green = (
+            _integration_tier_verification_passed(results, selected)
+            and current_integrated_revision == integrated_revision
+        )
+        review_task = f"{fanout_id}:review"
+        if health_events is not None and integration_green and producer_evidence:
+            health_events.queued(
+                review_task,
+                dependencies=tuple(sorted(selected)),
+                resource_class="final_review",
+                phase="review",
+                revision=current_integrated_revision,
+            )
+            health_events.started(review_task, phase="review")
         final_review = run_final_review_after_integration(
             final_review_engine,
             integrated_revision=integrated_revision or "",
-            integration_green=(
-                _integration_tier_verification_passed(results, selected)
-                and current_integrated_revision == integrated_revision
-            ),
+            integration_green=integration_green,
             producer_evidence=producer_evidence,
         )
+        if health_events is not None and integration_green and producer_evidence:
+            health_events.finished(
+                review_task,
+                terminal_status=(
+                    "succeeded" if final_review.get("final_review_status") == "PASS" else "failed"
+                ),
+                phase="review",
+            )
     summary_units = [results[unit_id] for unit_id in order]
     for entry in summary_units:
         decision = resume_decisions.get(str(entry.get("unit_id", "")))
@@ -3003,6 +3050,7 @@ def _dispatch_unit(
     verification_wave_width: int = 1,
     verification_execution_gate: VerificationExecutionGate | None = None,
     diagnostic_engine: DiagnosticExecutionEngine | None = None,
+    health_events: FanoutHealthEvents | None = None,
 ) -> dict[str, Any]:
     from .model_inventory import catalog_fingerprint_note
 
@@ -3399,12 +3447,21 @@ def _dispatch_unit(
             output_truncation: dict[str, Any] | None = None
             stderr_truncation: dict[str, Any] | None = None
             exit_code = 1
+            if health_events is not None and attempt > 1:
+                health_events.queued(
+                    unit_id,
+                    dependencies=tuple(str(dep) for dep in unit.get("depends_on", []) or []),
+                    resource_class=owner,
+                    retry=attempt - 1,
+                )
             # Real spawns only (the same seam as the pid hook): stagger this
             # unit's start so the first dispatch of the fanout writes the
             # provider prompt cache the byte-identical sibling preambles read.
             # Inside the loop, so a retry is spaced from its siblings too.
             if spawn_stagger is not None and "on_spawn" in spawn_kwargs:
                 spawn_stagger.reserve()
+            if health_events is not None and attempt > 1:
+                health_events.started(unit_id, retry=attempt - 1)
             try:
                 completed = runner(
                     argv,
@@ -3449,6 +3506,12 @@ def _dispatch_unit(
                 exit_code, output_tail = 124, f"unit timed out after {timeout}s"
             except OSError as exc:
                 exit_code, output_tail = 1, f"spawn failed: {exc}"
+            if health_events is not None:
+                health_events.finished(
+                    unit_id,
+                    terminal_status="succeeded" if exit_code == 0 else "failed",
+                    retry=attempt - 1,
+                )
             if exit_code == 0:
                 break
             decision = _consider_unit_retry(
@@ -3592,6 +3655,17 @@ def _dispatch_unit(
     # event it may append is visible to `_unit_verification_is_observed`.
     verification: dict[str, Any] = {}
     if run_verification and exit_code == 0 and unit_result.get("result_schema_valid"):
+        verification_task = f"{unit_id}:verification"
+        producer_revision = str(unit_result["producer_head_sha"])
+        if health_events is not None:
+            health_events.queued(
+                verification_task,
+                dependencies=(unit_id,),
+                resource_class="verification",
+                phase="verification",
+                revision=producer_revision,
+            )
+            health_events.started(verification_task, phase="verification")
         verification = _run_unit_verification(
             paths,
             unit,
@@ -3605,6 +3679,16 @@ def _dispatch_unit(
             wave_width=verification_wave_width,
             execution_gate=verification_execution_gate,
         )
+        if health_events is not None:
+            health_events.finished(
+                verification_task,
+                terminal_status="succeeded" if verification.get("verification_status") == "passed" else "failed",
+                reused=any(
+                    isinstance(row, Mapping) and bool(row.get("reused"))
+                    for row in verification.get("verification_checks", [])
+                ),
+                phase="verification",
+            )
     diagnostics: dict[str, object] = {}
     if diagnostic_engine is not None and diagnostic_engine.settings.enabled:
         producer_head = _observed_clean_producer_head(runner, worktree)

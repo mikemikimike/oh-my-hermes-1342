@@ -4403,6 +4403,34 @@ class FanoutDispatchVerificationCliTests(unittest.TestCase):
             self.assertEqual(status, 0, stderr)
             self.assertTrue(captured["run_verification"])
 
+    def test_health_events_flag_is_threaded_to_dispatch(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo, _sha = _make_repo(root)
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            fanout_id = self._prepare(root, base)
+            goal_path = root / "goal.txt"
+            goal_path.write_text(_GOAL, encoding="utf-8")
+            captured: dict[str, object] = {}
+
+            def fake_dispatch(paths, contract, **kwargs):
+                captured.update(kwargs)
+                return {"schema_version": "fanout_dispatch_summary/v1", "units": []}
+
+            argv = base + [
+                "coding", "fanout", "dispatch", fanout_id, "--goal-file", str(goal_path),
+                "--repo-root", str(repo), "--dry-run",
+            ]
+            with mock.patch("omh.coding.fanout_dispatch.dispatch_fanout", fake_dispatch):
+                status, _stdout, stderr = run_cli(argv)
+            self.assertEqual(status, 0, stderr)
+            self.assertFalse(captured["emit_health_events"])
+
+            with mock.patch("omh.coding.fanout_dispatch.dispatch_fanout", fake_dispatch):
+                status, _stdout, stderr = run_cli(argv + ["--health-events"])
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue(captured["emit_health_events"])
+
     def test_integration_target_requires_verification_and_a_complete_pair(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
