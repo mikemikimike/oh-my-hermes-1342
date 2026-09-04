@@ -28,6 +28,10 @@ from .paired_run_execution_validation import (
     terminal_state,
     validate_limits,
 )
+from .paired_run_execution_fan_in import (
+    PairedRunExecutionFanInError,
+    build_paired_run_execution_decision,
+)
 
 WorkspaceFactory = Callable[[PairedRunDispatchCell], PairedRunWorkspace]
 Runner = Callable[[PairedRunDispatchCell, PairedRunWorkspace], PairedRunExecutionOutcome]
@@ -37,6 +41,7 @@ __all__ = [
     "Cleaner",
     "ExecutionState",
     "PairedRunCleanupFailure",
+    "PairedRunExecutionFanInError",
     "PairedRunExecutionLimits",
     "PairedRunExecutionOutcome",
     "PairedRunExecutionReport",
@@ -45,6 +50,7 @@ __all__ = [
     "PairedRunWorkspaceFailure",
     "Runner",
     "WorkspaceFactory",
+    "build_paired_run_execution_decision",
     "execute_paired_run_plan",
 ]
 
