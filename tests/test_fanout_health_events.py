@@ -60,6 +60,24 @@ class FanoutHealthEventTests(unittest.TestCase):
         ):
             self.assertEqual(monotonic_milliseconds(), 12)
 
+    def test_same_millisecond_lifecycle_is_preserved(self) -> None:
+        recorded = []
+        events = FanoutHealthEvents(
+            fanout_id="fanout-abcdef123456",
+            revision=_SHA,
+            emit=recorded.append,
+            clock=lambda: 7,
+        )
+
+        events.queued("core", dependencies=(), resource_class="codex")
+        events.started("core")
+        events.finished("core", terminal_status="succeeded")
+
+        self.assertEqual(
+            [(event.event, event.at_ms) for event in recorded],
+            [("queued", 7), ("started", 7), ("finished", 7)],
+        )
+
     def test_diamond_events_reconcile_through_the_real_projector(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

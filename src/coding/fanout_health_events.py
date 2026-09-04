@@ -82,7 +82,7 @@ class FanoutHealthEvents:
             if task is None or task.started_at_ms is not None:
                 return
             at_ms = self._clock()
-            if at_ms <= task.queued_at_ms:
+            if at_ms < task.queued_at_ms:
                 return
             started = _Task(task.dependencies, task.resource_class, task.revision, task.queued_at_ms, at_ms)
             self._tasks[key] = started
@@ -103,7 +103,7 @@ class FanoutHealthEvents:
             if task is None or task.started_at_ms is None or key in self._finished:
                 return
             at_ms = self._clock()
-            if at_ms <= task.started_at_ms:
+            if at_ms < task.started_at_ms:
                 return
             self._finished.add(key)
         self._record(
