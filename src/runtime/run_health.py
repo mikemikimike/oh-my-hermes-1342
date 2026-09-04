@@ -15,6 +15,17 @@ they project byte-identical summaries apart from `owner_attribution`.
 `health_digest` makes that equality one comparison instead of a field-by-field
 walk.
 
+`run_health_summary/v2` (issue #1296) is the same projection plus one optional
+COMMITTED section: `critical_path_health/v1`, a projection produced by
+`omh.runtime.critical_path_health` and embedded as-is. The v1 key sets are
+exact in both directions, so v1 is frozen -- a summary cannot grow an
+optional section without breaking every v1 record or silently widening the
+schema. The section therefore arrives through `run_health_input/v2` and
+upgrades the summary to `run_health_summary/v2`; when it is absent, the v1
+parse, render, and digest bytes are produced exactly. The section is inside
+`health_digest`, so two runs whose critical paths were measured under
+incompatible executor/model/environment metadata never compare equal.
+
 The equality is not vacuous. An owner whose stream this repo cannot read carries
 a lower evidence ceiling, so its `full_tests_passed` normalizes to
 `unmapped_source_event` rather than `tests_passed`; the resulting summary
@@ -90,10 +101,17 @@ from ..coding.owner_progress_normalization import (
     owner_evidence_ceiling,
 )
 from ..system.metadata_safety import require_opaque_metadata_ref
+from .run_health_critical_path import (
+    committed_critical_path_health_errors,
+    parse_committed_critical_path_health,
+    render_critical_path_health_lines,
+)
 
 
 RUN_HEALTH_INPUT_SCHEMA_VERSION: Final[str] = "run_health_input/v1"
+RUN_HEALTH_INPUT_V2_SCHEMA_VERSION: Final[str] = "run_health_input/v2"
 RUN_HEALTH_SUMMARY_SCHEMA_VERSION: Final[str] = "run_health_summary/v1"
+RUN_HEALTH_SUMMARY_V2_SCHEMA_VERSION: Final[str] = "run_health_summary/v2"
 
 RUN_HEALTH_CLAIM_BOUNDARY: Final[str] = (
     "A run health summary is an OMH-local projection over normalized owner progress events. It is "
@@ -220,6 +238,7 @@ _RUN_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
 _INPUT_KEYS: Final[frozenset[str]] = frozenset(
     {"schema_version", "run_id", "owner", "observed_at_ms", "events", "efficiency_claim"}
 )
+_INPUT_V2_KEYS: Final[frozenset[str]] = _INPUT_KEYS | {"critical_path_health"}
 _INPUT_EVENT_KEYS: Final[frozenset[str]] = frozenset({"source_event", "at_ms"})
 _INPUT_CLAIM_KEYS: Final[frozenset[str]] = frozenset({"direction", "baseline_ref", "evaluator_ref"})
 
@@ -238,6 +257,7 @@ _SUMMARY_KEYS: Final[frozenset[str]] = frozenset(
         "claim_boundary",
     }
 )
+_SUMMARY_V2_KEYS: Final[frozenset[str]] = _SUMMARY_KEYS | {"critical_path_health"}
 _ATTRIBUTION_KEYS: Final[frozenset[str]] = frozenset({"owner", "owner_supported", "evidence_ceiling"})
 _OBSERVATION_KEYS: Final[frozenset[str]] = frozenset({"normalized_event", "at_ms"})
 _METRIC_KEYS: Final[frozenset[str]] = frozenset({"state", "value", "reason"})
@@ -283,6 +303,7 @@ class RunHealthInput:
     observed_at_ms: int
     events: tuple[RunHealthEvent, ...]
     efficiency_claim: RunHealthEfficiencyClaim
+    critical_path_health: dict[str, object] | None = None
 
 
 def unphased_normalized_events() -> tuple[str, ...]:
@@ -297,15 +318,29 @@ def unphased_normalized_events() -> tuple[str, ...]:
 
 
 def parse_run_health_input(raw: object) -> RunHealthInput:
-    """Parse a `run_health_input/v1` payload, or raise `ValueError`.
+    """Parse a `run_health_input/v1` or `run_health_input/v2` payload, or raise `ValueError`.
 
     The AC3 gate lives here as well as in the validator: a comparative
     `direction` without both a named baseline and a named evaluator is refused
     before a summary exists, so there is no code path that builds one.
+
+    v1 is frozen by its exact key set, so the optional committed
+    `critical_path_health/v1` section is admitted only by v2. A v2 input
+    without the section parses to the same input v1 would, byte for byte.
     """
-    if not isinstance(raw, dict) or set(raw) != _INPUT_KEYS:
+    if not isinstance(raw, dict):
         raise ValueError("run health input must use the exact run_health_input/v1 fields")
-    if raw.get("schema_version") != RUN_HEALTH_INPUT_SCHEMA_VERSION:
+    version = raw.get("schema_version")
+    critical_path_health: dict[str, object] | None = None
+    if version == RUN_HEALTH_INPUT_V2_SCHEMA_VERSION:
+        if set(raw) - _INPUT_V2_KEYS or _INPUT_KEYS - set(raw):
+            raise ValueError("run health input must use the exact run_health_input/v2 fields")
+        section = raw.get("critical_path_health")
+        if section is not None:
+            critical_path_health = parse_committed_critical_path_health(section)
+    elif set(raw) != _INPUT_KEYS:
+        raise ValueError("run health input must use the exact run_health_input/v1 fields")
+    if version not in (RUN_HEALTH_INPUT_SCHEMA_VERSION, RUN_HEALTH_INPUT_V2_SCHEMA_VERSION):
         raise ValueError("unsupported run health input schema")
     run_id = _required_run_id(raw.get("run_id"))
     owner = require_opaque_metadata_ref(raw.get("owner"), field="owner")
@@ -315,11 +350,15 @@ def parse_run_health_input(raw: object) -> RunHealthInput:
     if latest is not None and observed_at_ms < latest:
         raise ValueError("observed_at_ms must not precede the last observed event timestamp")
     claim = _parse_efficiency_claim(raw.get("efficiency_claim"))
-    return RunHealthInput(run_id, owner, observed_at_ms, events, claim)
+    return RunHealthInput(run_id, owner, observed_at_ms, events, claim, critical_path_health)
 
 
 def build_run_health_summary(value: RunHealthInput) -> dict[str, object]:
-    """Project one `run_health_summary/v1` record. Pure: no clock, no I/O."""
+    """Project one `run_health_summary/v1` (or `v2`) record. Pure: no clock, no I/O.
+
+    A committed critical-path section upgrades the record to
+    `run_health_summary/v2`; without one, the v1 bytes are produced exactly.
+    """
     attribution = owner_attribution(value.owner)
     observations = tuple(
         {
@@ -352,6 +391,9 @@ def build_run_health_summary(value: RunHealthInput) -> dict[str, object]:
         "health_digest": "",
         "claim_boundary": RUN_HEALTH_CLAIM_BOUNDARY,
     }
+    if value.critical_path_health is not None:
+        summary["schema_version"] = RUN_HEALTH_SUMMARY_V2_SCHEMA_VERSION
+        summary["critical_path_health"] = dict(value.critical_path_health)
     summary["health_digest"] = run_health_digest(summary)
     return summary
 
@@ -401,21 +443,30 @@ def run_health_digest(payload: Mapping[str, Any]) -> str:
 
 
 def validate_run_health_summary(payload: object) -> list[str]:
-    """Every reason this payload is not a `run_health_summary/v1` record.
+    """Every reason this payload is not a `run_health_summary/v1` or `v2` record.
 
     Checks the key set in both directions and re-derives everything derivable,
     so a record whose numbers were edited to read healthier is refused rather
-    than rendered.
+    than rendered. The committed critical-path section is validated against
+    its own schema (see `run_health_critical_path`); it is not re-derived from
+    observations because the events that produced it are not carried here.
     """
     if not isinstance(payload, dict):
         return ["run_health_summary must be an object"]
-    key_errors = _key_set_errors(payload, _SUMMARY_KEYS, "run_health_summary")
+    v2 = payload.get("schema_version") == RUN_HEALTH_SUMMARY_V2_SCHEMA_VERSION
+    key_errors = _key_set_errors(payload, _SUMMARY_V2_KEYS if v2 else _SUMMARY_KEYS, "run_health_summary")
     if key_errors:
         return key_errors
 
     errors: list[str] = []
-    if payload.get("schema_version") != RUN_HEALTH_SUMMARY_SCHEMA_VERSION:
-        errors.append("run_health_summary.schema_version must be run_health_summary/v1")
+    if v2:
+        errors.extend(
+            committed_critical_path_health_errors(
+                payload.get("critical_path_health"), "run_health_summary.critical_path_health"
+            )
+        )
+    elif payload.get("schema_version") != RUN_HEALTH_SUMMARY_SCHEMA_VERSION:
+        errors.append("run_health_summary.schema_version must be run_health_summary/v1 or run_health_summary/v2")
     if payload.get("claim_boundary") != RUN_HEALTH_CLAIM_BOUNDARY:
         errors.append("run_health_summary.claim_boundary must be the declared boundary text")
     if payload.get("staleness_threshold_ms") != RUN_HEALTH_STALENESS_THRESHOLD_MS:
@@ -489,6 +540,9 @@ def render_run_health_summary_text(payload: Mapping[str, Any]) -> str:
     lines.append(f"- retries: {_metric_text(metrics.get('retry_count'))}")
     lines.append(f"- evidence gaps: {_metric_text(metrics.get('evidence_gap_count'))}")
     lines.append(f"- unobserved phases: {_metric_text(metrics.get('unobserved_phase_count'))}")
+    critical_path = payload.get("critical_path_health")
+    if isinstance(critical_path, Mapping):
+        lines.extend(render_critical_path_health_lines(critical_path))
     lines.append(
         f"Efficiency claim: {claim.get('direction', '')} "
         f"(baseline: {claim.get('baseline_ref', '') or 'none'}, "

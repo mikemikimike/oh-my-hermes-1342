@@ -17,6 +17,7 @@ criterion from passing vacuously:
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -34,12 +35,19 @@ from omh.coding.owner_progress_normalization import (  # noqa: E402
     UNMAPPED_NORMALIZED_EVENT,
 )
 from omh.local_store import atomic_write_json  # noqa: E402
+from omh.runtime.critical_path_health import (  # noqa: E402
+    CriticalPathEventKind,
+    CriticalPathHealthEvent,
+    project_critical_path_health,
+)
 from omh.runtime.run_health import (  # noqa: E402
     MAX_RUN_HEALTH_EVENTS,
     RUN_HEALTH_CLAIM_BOUNDARY,
+    RUN_HEALTH_INPUT_V2_SCHEMA_VERSION,
     RUN_HEALTH_METRICS,
     RUN_HEALTH_STALENESS_THRESHOLD_MS,
     RUN_HEALTH_SUMMARY_SCHEMA_VERSION,
+    RUN_HEALTH_SUMMARY_V2_SCHEMA_VERSION,
     build_run_health_summary,
     parse_run_health_input,
     render_run_health_summary_text,
@@ -89,6 +97,77 @@ def _metric(summary: dict[str, object], name: str) -> dict[str, object]:
     value = metrics[name]
     assert isinstance(value, dict)
     return value
+
+
+# Wave 2 (issue #1296): the committed critical-path section. The diamond is
+# plan a -> parallel b/c -> cleanup d, so the committed projection carries one
+# shared dependency chain, real overlap, and three phases to rank. The ranked
+# shape carries five phases so "top critical stages" has something to cut.
+_CRITICAL_PATH_DIAMOND: tuple[tuple[str, int, int, int, str, tuple[str, ...]], ...] = (
+    ("a", 0, 0, 100, "plan", ()),
+    ("b", 100, 100, 300, "execution", ("a",)),
+    ("c", 100, 100, 400, "execution", ("a",)),
+    ("d", 400, 400, 500, "cleanup", ("b", "c")),
+)
+
+_CRITICAL_PATH_RANKED: tuple[tuple[str, int, int, int, str, tuple[str, ...]], ...] = (
+    ("a", 0, 0, 100, "plan", ()),
+    ("b", 100, 100, 600, "execution", ("a",)),
+    ("c", 600, 600, 800, "review", ("b",)),
+    ("d", 800, 800, 850, "deploy", ("c",)),
+    ("e", 850, 850, 860, "cleanup", ("d",)),
+)
+
+
+def _critical_path_projection(
+    spans: tuple[tuple[str, int, int, int, str, tuple[str, ...]], ...] = _CRITICAL_PATH_DIAMOND,
+    *,
+    executor: str = "codex",
+    model: str = "model-1",
+    environment: str = "env-1",
+    revision: str = "rev-1",
+) -> dict[str, object]:
+    """One committed `critical_path_health/v1` section, as the producer emits it."""
+    events: list[CriticalPathHealthEvent] = []
+    for task_id, queued, started, finished, phase, dependencies in spans:
+        event_points: tuple[tuple[CriticalPathEventKind, int], ...] = (
+            ("queued", queued),
+            ("started", started),
+            ("finished", finished),
+        )
+        for event, at_ms in event_points:
+            events.append(
+                CriticalPathHealthEvent(
+                    task_id=task_id,
+                    event=event,
+                    at_ms=at_ms,
+                    revision=revision,
+                    executor=executor,
+                    model=model,
+                    environment=environment,
+                    dependencies=dependencies,
+                    phase=phase,
+                    terminal_status="succeeded" if event == "finished" else "",
+                )
+            )
+    return project_critical_path_health(events).to_dict()
+
+
+def _gappy_critical_path_projection() -> dict[str, object]:
+    """A projection whose evidence is incomplete: metrics stay absent."""
+    events = (
+        CriticalPathHealthEvent(task_id="a", event="queued", at_ms=0, revision="rev-1", executor="codex", model="model-1", environment="env-1"),
+        CriticalPathHealthEvent(task_id="a", event="started", at_ms=1, revision="rev-1", executor="codex", model="model-1", environment="env-1"),
+    )
+    return project_critical_path_health(events).to_dict()
+
+
+def _with_edited_metric(section: dict[str, object], **values: object) -> dict[str, object]:
+    edited = copy.deepcopy(section)
+    metrics = edited["metrics"]
+    assert isinstance(metrics, dict)
+    metrics.update(values)
+    return edited
 
 
 # The same three positions in the run, said in two owner-native dialects that
@@ -555,6 +634,198 @@ class RunHealthValidatorTests(unittest.TestCase):
                     self.assertEqual(validate_run_health_summary(_summary(owner, events)), [])
 
 
+class RunHealthCriticalPathSectionTests(unittest.TestCase):
+    """Wave 2 (issue #1296): an optional committed `critical_path_health/v1` section.
+
+    The v1 key sets are exact in both directions (see
+    `RunHealthInputBoundsTests` and `RunHealthValidatorTests`), so v1 is frozen:
+    a summary cannot grow an optional section without breaking every v1 record
+    or silently widening the schema. The section therefore arrives through an
+    explicit `run_health_input/v2` and upgrades the summary to
+    `run_health_summary/v2`; when it is absent, the v1 parse, render, and digest
+    bytes are produced exactly.
+    """
+
+    def _v2_summary(
+        self,
+        section: dict[str, object],
+        *,
+        owner: str = "codex",
+        events: list[tuple[str, int | None]] = _CODEX_NATIVE,
+    ) -> dict[str, object]:
+        payload = _input(owner, events)
+        payload["schema_version"] = RUN_HEALTH_INPUT_V2_SCHEMA_VERSION
+        payload["critical_path_health"] = section
+        return build_run_health_summary(parse_run_health_input(payload))
+
+    def test_v1_is_frozen_and_refuses_to_carry_the_section(self) -> None:
+        payload = _input("codex", _CODEX_NATIVE)
+        payload["critical_path_health"] = _critical_path_projection()
+
+        with self.assertRaisesRegex(ValueError, "exact run_health_input/v1 fields"):
+            parse_run_health_input(payload)
+
+    def test_an_absent_section_leaves_the_v1_bytes_unchanged(self) -> None:
+        legacy = _summary("codex", _CODEX_NATIVE)
+        absent = _input("codex", _CODEX_NATIVE)
+        absent["schema_version"] = RUN_HEALTH_INPUT_V2_SCHEMA_VERSION
+        explicit_null = copy.deepcopy(absent)
+        explicit_null["critical_path_health"] = None
+
+        for payload in (absent, explicit_null):
+            with self.subTest(payload=payload):
+                summary = build_run_health_summary(parse_run_health_input(payload))
+                self.assertEqual(summary, legacy)
+                self.assertEqual(render_run_health_summary_text(summary), render_run_health_summary_text(legacy))
+                self.assertEqual(validate_run_health_summary(summary), [])
+
+    def test_a_committed_section_upgrades_the_summary_to_v2(self) -> None:
+        section = _critical_path_projection()
+        summary = self._v2_summary(section)
+
+        self.assertEqual(summary["schema_version"], RUN_HEALTH_SUMMARY_V2_SCHEMA_VERSION)
+        self.assertEqual(summary["critical_path_health"], section)
+        self.assertEqual(summary, self._v2_summary(section))
+        self.assertEqual(validate_run_health_summary(summary), [])
+
+    def test_a_v2_summary_requires_the_section_key(self) -> None:
+        summary = self._v2_summary(_critical_path_projection())
+        stripped = dict(summary)
+        stripped.pop("critical_path_health")
+
+        self.assertEqual(
+            validate_run_health_summary(stripped),
+            ["run_health_summary is missing a required key: critical_path_health"],
+        )
+
+    def test_the_section_joins_the_digest_identity(self) -> None:
+        """The digest already refuses owner and wall clock; the section's
+        execution identity joins it, so two runs whose critical paths were
+        measured under incompatible metadata never compare equal.
+        """
+        baseline = self._v2_summary(_critical_path_projection())
+
+        self.assertEqual(
+            baseline["health_digest"],
+            self._v2_summary(
+                _critical_path_projection(), owner="claude-code", events=_CLAUDE_NATIVE
+            )["health_digest"],
+        )
+        for field, value in (
+            ("executor", "claude-code"),
+            ("model", "model-2"),
+            ("environment", "env-2"),
+            ("revision", "rev-2"),
+        ):
+            with self.subTest(field=field):
+                incompatible = self._v2_summary(_critical_path_projection(**{field: value}))
+                self.assertNotEqual(baseline["health_digest"], incompatible["health_digest"])
+
+    def test_the_parser_refuses_a_section_that_is_not_a_committed_projection(self) -> None:
+        section = _critical_path_projection()
+        phase_attribution = section["phase_attribution"]
+        assert isinstance(phase_attribution, list)
+        cases = {
+            "wrong schema version": {**section, "schema_version": "critical_path_health/v2"},
+            "wrong privacy": {**section, "privacy": "raw_payload"},
+            "extra key": {**section, "notes": "hand added"},
+            "missing key": {key: value for key, value in section.items() if key != "metrics"},
+            "negative metric": _with_edited_metric(section, wall_clock_ms=-1),
+            "boolean metric": _with_edited_metric(section, peak_concurrency=True),
+            "gap alongside metrics": {
+                **section,
+                "evidence_gaps": [{"task_id": "a", "code": "missing_terminal"}],
+            },
+            "unsorted attribution": {
+                **section,
+                "phase_attribution": list(reversed(phase_attribution)),
+            },
+        }
+        for name, bad in cases.items():
+            with self.subTest(name=name):
+                payload = _input("codex", _CODEX_NATIVE)
+                payload["schema_version"] = RUN_HEALTH_INPUT_V2_SCHEMA_VERSION
+                payload["critical_path_health"] = bad
+                with self.assertRaisesRegex(ValueError, "critical_path_health"):
+                    parse_run_health_input(payload)
+
+    def test_the_validator_refuses_a_hand_edited_section(self) -> None:
+        summary = self._v2_summary(_critical_path_projection())
+        tampered = copy.deepcopy(summary)
+        metrics = tampered["critical_path_health"]["metrics"]
+        assert isinstance(metrics, dict)
+        metrics["wall_clock_ms"] = -1
+
+        self.assertTrue(any("critical_path_health" in error for error in validate_run_health_summary(tampered)))
+
+        tampered["health_digest"] = run_health_digest(tampered)
+        self.assertEqual(
+            validate_run_health_summary(tampered),
+            [
+                "run_health_summary.critical_path_health.metrics.wall_clock_ms "
+                "must be a nonnegative integer"
+            ],
+        )
+
+    def test_the_text_surface_renders_top_critical_stages_and_evidence_gaps(self) -> None:
+        text = render_run_health_summary_text(self._v2_summary(_critical_path_projection()))
+
+        self.assertIn(
+            "Critical path: wall clock 500 ms, active 700 ms, queue 0 ms, critical path 500 ms", text
+        )
+        self.assertIn("Top critical stages:", text)
+        self.assertIn("- execution: 500 ms active across 2 tasks", text)
+        self.assertIn("- cleanup: 100 ms active across 1 task", text)
+        self.assertIn("- plan: 100 ms active across 1 task", text)
+        self.assertLess(text.index("- execution: 500 ms"), text.index("- cleanup: 100 ms"))
+        self.assertIn("Critical path evidence gaps: none", text)
+
+    def test_top_critical_stages_rank_by_active_time_and_stop_at_three(self) -> None:
+        summary = self._v2_summary(_critical_path_projection(_CRITICAL_PATH_RANKED))
+        text = render_run_health_summary_text(summary)
+
+        self.assertIn("- execution: 500 ms active across 1 task", text)
+        self.assertIn("- review: 200 ms active across 1 task", text)
+        self.assertIn("- plan: 100 ms active across 1 task", text)
+        self.assertNotIn("deploy: 50 ms", text)
+        self.assertNotIn("cleanup: 10 ms", text)
+
+    def test_a_cleanup_that_precedes_the_final_task_still_commits(self) -> None:
+        """The producer's `cleanup_tail_ms` goes negative when cleanup finishes
+        before the last non-cleanup task; a committed projection carrying one
+        is accepted rather than refused.
+        """
+        spans = (
+            ("a", 0, 0, 100, "plan", ()),
+            ("b", 100, 100, 600, "execution", ("a",)),
+            ("c", 600, 600, 700, "cleanup", ("b",)),
+            ("d", 700, 700, 800, "deploy", ("c",)),
+        )
+        summary = self._v2_summary(_critical_path_projection(spans))
+
+        metrics = summary["critical_path_health"]["metrics"]
+        assert isinstance(metrics, dict)
+        self.assertEqual(metrics["cleanup_tail_ms"], -100)
+        self.assertEqual(validate_run_health_summary(summary), [])
+
+    def test_a_projection_with_gaps_renders_the_absence_not_a_number(self) -> None:
+        text = render_run_health_summary_text(self._v2_summary(_gappy_critical_path_projection()))
+
+        self.assertIn("Critical path: unavailable (evidence gaps: 1)", text)
+        self.assertIn("Top critical stages: unavailable (evidence gaps: 1)", text)
+        self.assertIn("- a: missing_terminal", text)
+        self.assertEqual(validate_run_health_summary(self._v2_summary(_gappy_critical_path_projection())), [])
+
+    def test_the_critical_path_adapter_never_reads_a_clock(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1] / "src" / "runtime" / "run_health_critical_path.py"
+        ).read_text(encoding="utf-8")
+
+        for forbidden in ("import time", "from time", "import datetime", "from datetime", "monotonic(", "time()"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
+
+
 class RunHealthCommandTests(unittest.TestCase):
     def _write_input(self, root: Path, payload: dict[str, object]) -> Path:
         path = root / "run_health_input.json"
@@ -595,6 +866,29 @@ class RunHealthCommandTests(unittest.TestCase):
 
         self.assertEqual(status, 2)
         self.assertIn("named baseline_ref and evaluator_ref", stderr)
+
+    def test_the_command_renders_a_committed_critical_path_section(self) -> None:
+        payload = _input("codex", _CODEX_NATIVE)
+        payload["schema_version"] = RUN_HEALTH_INPUT_V2_SCHEMA_VERSION
+        payload["critical_path_health"] = _critical_path_projection()
+        with TemporaryDirectory() as tmp:
+            path = self._write_input(Path(tmp), payload)
+            status, stdout, stderr = run_cli(["runtime", "health-summary", "--input", str(path)], output_json=False)
+
+        self.assertEqual(status, 0, stderr)
+        self.assertIn("Top critical stages:", stdout)
+        self.assertIn("- execution: 500 ms active across 2 tasks", stdout)
+
+    def test_the_command_refuses_a_section_that_is_not_a_committed_projection(self) -> None:
+        payload = _input("codex", _CODEX_NATIVE)
+        payload["schema_version"] = RUN_HEALTH_INPUT_V2_SCHEMA_VERSION
+        payload["critical_path_health"] = {"schema_version": "critical_path_health/v2"}
+        with TemporaryDirectory() as tmp:
+            path = self._write_input(Path(tmp), payload)
+            status, _stdout, stderr = run_cli(["runtime", "health-summary", "--input", str(path)], output_json=False)
+
+        self.assertEqual(status, 2)
+        self.assertIn("critical_path_health", stderr)
 
     def test_the_command_is_declared_a_bounded_polled_surface(self) -> None:
         self.assertIn("omh runtime health-summary", coding_progress_policy_enforcement()["bounded_surfaces"])
