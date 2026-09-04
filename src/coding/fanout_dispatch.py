@@ -76,6 +76,8 @@ from .executor_progress import (
 from .executor_readiness import probe_executor_readiness
 from .fanout_admission import AdaptiveFanoutAdmission
 from .fanout_artifact_sharing import plan_and_link_shared_artifacts
+from .fanout_diagnostics_hook import run_post_green_diagnostics
+from .diagnostic_execution import DiagnosticExecutionEngine
 from .fanout_contracts import (
     FANOUT_CLAIM_BOUNDARY,
     FANOUT_CONTRACT_SCHEMA_VERSION,
@@ -1343,6 +1345,7 @@ def _run_integration_verification_wave(
     integrated_worktree: Path | None,
     integrated_revision: str | None,
     execution_gate: VerificationExecutionGate,
+    diagnostic_engine: DiagnosticExecutionEngine | None,
 ) -> None:
     """Run integration-tier checks once the producer lanes have fanned in.
 
@@ -1400,6 +1403,21 @@ def _run_integration_verification_wave(
         entry.pop("verification_failures", None)
         entry.update(rerun)
         entry["unit_verification_observed"] = _unit_verification_is_observed(paths, str(entry["run_ref"]))
+        if diagnostic_engine is not None and diagnostic_engine.settings.enabled:
+            diagnostics = run_post_green_diagnostics(
+                diagnostic_engine,
+                owner=str(entry.get("owner") or "choose"),
+                workspace_id=f"{fanout_id}:{unit_id}:integrated",
+                baseline_revision=str(entry.get("unit_result", {}).get("base_sha", "")),
+                end_revision=integrated_revision,
+                verification_passed=entry.get("verification_status") == "passed",
+                producer_evidence=(
+                    producer_evidence
+                    and _verification_worktree_revision(runner, integrated_worktree) == integrated_revision
+                ),
+            )
+            if diagnostics is not None:
+                entry.update(diagnostics)
 
 
 def _run_unit_verification(
@@ -1567,6 +1585,7 @@ def dispatch_fanout(
     goal_attempt_id: str = "attempt-1",
     goal_attempt_progressed: bool = False,
     review_dispatch_budget: int = 1,
+    diagnostic_engine: DiagnosticExecutionEngine | None = None,
 ) -> dict[str, Any]:
     # The spawn guard runs before every other check, including the two
     # boundary re-checks below: it is the only one whose whole job is that no
@@ -1797,6 +1816,9 @@ def dispatch_fanout(
         # as the unit pool itself — never a new unbounded pool.
         "verification_wave_width": max(1, concurrency),
         "verification_execution_gate": verification_execution_gate,
+        # One caller-owned engine carries its cache and single-flight identity
+        # across every eligible unit in this dispatch.
+        "diagnostic_engine": diagnostic_engine,
     }
 
     def _dispatch_with_owner_gate(unit: Mapping[str, Any], **kwargs: Any) -> dict[str, Any]:
@@ -1993,6 +2015,7 @@ def dispatch_fanout(
                 integrated_worktree=integrated_worktree,
                 integrated_revision=integrated_revision,
                 execution_gate=verification_execution_gate,
+                diagnostic_engine=diagnostic_engine,
             )
     finally:
         if verification_execution_gate is not None:
@@ -2932,6 +2955,7 @@ def _dispatch_unit(
     review_budget: ReviewDispatchBudget,
     verification_wave_width: int = 1,
     verification_execution_gate: VerificationExecutionGate | None = None,
+    diagnostic_engine: DiagnosticExecutionEngine | None = None,
 ) -> dict[str, Any]:
     from .model_inventory import catalog_fingerprint_note
 
@@ -3534,6 +3558,21 @@ def _dispatch_unit(
             wave_width=verification_wave_width,
             execution_gate=verification_execution_gate,
         )
+    diagnostics: dict[str, object] = {}
+    if diagnostic_engine is not None and diagnostic_engine.settings.enabled:
+        producer_head = _observed_clean_producer_head(runner, worktree)
+        diagnostics = run_post_green_diagnostics(
+            diagnostic_engine,
+            owner=owner,
+            workspace_id=f"{fanout_id}:{unit_id}",
+            baseline_revision=base_sha,
+            end_revision=producer_head or "",
+            verification_passed=verification.get("verification_status") == "passed",
+            producer_evidence=(
+                producer_head is not None
+                and producer_head == unit_result.get("producer_head_sha")
+            ),
+        ) or {}
     result = {
         "unit_id": unit_id,
         "run_ref": run_ref,
@@ -3551,6 +3590,7 @@ def _dispatch_unit(
         ),
         **unit_result,
         **verification,
+        **diagnostics,
         "started_at": started_at,
         "finished_at": finished_at,
         "duration_seconds": duration_seconds,
