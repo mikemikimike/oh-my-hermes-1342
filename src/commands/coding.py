@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from ..coding_delegation import CODING_EXECUTOR_TARGETS, build_coding_delegation_payload, coding_delegation_record_payload
+from ..coding.diagnostic_execution import DiagnosticExecutionEngine
 from ..coding.executor_capability_snapshots import (
     ExecutorCapabilitySnapshotError,
     build_executor_capability_snapshot,
@@ -2059,7 +2060,11 @@ def _fanout_dispatch_exit_code(summary: dict) -> int:
     return 0
 
 
-def cmd_coding_fanout_dispatch(args: argparse.Namespace) -> int:
+def cmd_coding_fanout_dispatch(
+    args: argparse.Namespace,
+    *,
+    diagnostic_engine: DiagnosticExecutionEngine | None = None,
+) -> int:
     import subprocess as _subprocess
 
     from ..coding.fanout_artifacts import (
@@ -2072,6 +2077,9 @@ def cmd_coding_fanout_dispatch(args: argparse.Namespace) -> int:
 
     paths = _paths(args)
     recovery_kwargs = _failure_recovery_kwargs(args)
+    if args.diagnostics and diagnostic_engine is None:
+        raise OmhError("--diagnostics requires an injected diagnostic execution engine")
+    selected_diagnostic_engine = diagnostic_engine if args.diagnostics else None
     try:
         parallelism = read_parallelism_policy(paths)
     except ValueError as exc:
@@ -2140,6 +2148,7 @@ def cmd_coding_fanout_dispatch(args: argparse.Namespace) -> int:
             goal_attempt_id=args.goal_attempt_id,
             goal_attempt_progressed=bool(args.goal_attempt_progressed),
             review_dispatch_budget=args.review_dispatch_budget,
+            diagnostic_engine=selected_diagnostic_engine,
             **recovery_kwargs,
         )
         _print_json(summary)
@@ -2181,6 +2190,7 @@ def cmd_coding_fanout_dispatch(args: argparse.Namespace) -> int:
             goal_attempt_id=args.goal_attempt_id,
             goal_attempt_progressed=bool(args.goal_attempt_progressed),
             review_dispatch_budget=args.review_dispatch_budget,
+            diagnostic_engine=selected_diagnostic_engine,
             **recovery_kwargs,
         )
     except ValueError as exc:
@@ -2602,8 +2612,11 @@ def _add_failure_recovery_arguments(parser) -> None:
 
 
 def _add_coding_commands(sub) -> None:
+    from .paired_run import add_coding_paired_run_command
+
     coding = sub.add_parser("coding", help="Prepare executor-neutral or tracked coding handoff artifacts.")
     coding_sub = coding.add_subparsers(dest="coding_command", required=True)
+    add_coding_paired_run_command(coding_sub)
 
     fanout = coding_sub.add_parser(
         "fanout",
@@ -2675,6 +2688,19 @@ def _add_coding_commands(sub) -> None:
         action="store_true",
         help="Run each unit's contract verification_commands in its worktree after its sidecar validates.",
     )
+    diagnostics = fanout_dispatch.add_mutually_exclusive_group()
+    diagnostics.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="Enable the optional post-GREEN diagnostic hook through an injected execution engine.",
+    )
+    diagnostics.add_argument(
+        "--no-diagnostics",
+        dest="diagnostics",
+        action="store_false",
+        help="Disable the optional post-GREEN diagnostic hook (the default).",
+    )
+    fanout_dispatch.set_defaults(diagnostics=False)
     fanout_dispatch.add_argument(
         "--integration-worktree",
         default="",
