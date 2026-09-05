@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -186,7 +187,8 @@ class FanoutHealthEventTests(_journal_cases.FanoutHealthJournalBoundsTests):
             self.assertEqual([record["event"] for record in records], ["queued", "started", "finished"])
             self.assertTrue(all(record["privacy"] == "metadata_only" for record in records))
             self.assertTrue(all("output" not in record and "prompt" not in record for record in records))
-            self.assertEqual(path.stat().st_mode & 0o077, 0)
+            if os.name != "nt":
+                self.assertEqual(path.stat().st_mode & 0o077, 0)
             self.assertIsNotNone(projected.record.metrics)
             self.assertEqual(projected.evidence_gaps, ())
 
