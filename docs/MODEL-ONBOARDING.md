@@ -155,6 +155,15 @@ pair (old generation vs new, same task corpus, same effort) as the follow-up
 when no served route exists yet. A calibration that measures worse than
 baseline is revised or removed in the same change that reports the number.
 
+An exact-model override has a second pair: `family` vs `optimized` on
+`benchmarks/live-model-tools/v1` (`bench.py run --condition family`, then
+`analyze.py --baseline-condition family`). The family arm sends the block the
+model would inherit if the override did not exist, so the override is judged
+against what it replaced, not only against no calibration. Pass rate alone
+is the wrong yardstick on that corpus (every arm tends to tie); read the
+paired token delta and, where the host records them, tool-call and turn
+counts, because a counter for an "over-doing" trait shows up there first.
+
 ## 9. Report
 
 PR body per the repo template: capability, motivation, boundary-level

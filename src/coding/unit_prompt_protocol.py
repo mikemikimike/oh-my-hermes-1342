@@ -340,11 +340,10 @@ MODEL_HIGH_EFFORT_CALIBRATIONS: Final[dict[str, str]] = {
     # are not restated. No monitoring language, no chain-of-thought requests.
     "gpt-6-astra": (
         "High-effort calibration: the user's instructions outrank any skill or guideline text, and "
-        "the numbered criteria are the complete task — carry them to completion instead of pausing "
-        "for sign-off on work the boundary already authorizes. Ask one focused question only when a "
-        "missing input would materially change the result; otherwise state the assumption and "
-        "proceed. Size tests to the change: a reversible, low-impact edit that mirrors its "
-        "implementation needs no new test, and a green check is re-run only when its inputs changed."
+        "the numbered criteria are the complete task — nothing outside them is owed. Ask one focused "
+        "question only when a missing input would materially change the result; otherwise state the "
+        "assumption and proceed. Size tests to the change: a reversible, low-impact edit that mirrors "
+        "its implementation needs no new test, and a green check is re-run only when its inputs changed."
     ),
 }
 MODEL_COMPOSITION_CALIBRATIONS: Final[dict[str, str]] = {
@@ -447,20 +446,26 @@ def completion_criteria_for_unit(unit: Mapping[str, Any]) -> list[str]:
     return criteria
 
 
-def calibration_for_route(model_route: Mapping[str, Any] | None) -> str:
+def calibration_for_route(model_route: Mapping[str, Any] | None, *, family_only: bool = False) -> str:
     """Return the high-effort calibration block for a routed unit, or ''.
 
     Selected only when the route's effective reasoning effort is in the high
     tier; an exact-model override on the recorded `selected_model` wins, then
     family comes from the already-recorded `model_family` (falling back to
     generic for unknown/blank families).
+
+    `family_only=True` skips the exact-model override and returns the block
+    the model would inherit from its family. That is the measurement arm
+    `docs/MODEL-ONBOARDING.md` §8 asks for when an override ships: the
+    override is kept only if it measures at least as well as the inherited
+    block on the same corpus. Production callers never pass it.
     """
     if not isinstance(model_route, Mapping):
         return ""
     effort = str(model_route.get("selected_reasoning_effort", "") or "").casefold()
     if effort not in HIGH_EFFORT_TIER:
         return ""
-    override = MODEL_HIGH_EFFORT_CALIBRATIONS.get(
+    override = None if family_only else MODEL_HIGH_EFFORT_CALIBRATIONS.get(
         contract_model_id(str(model_route.get("selected_model", "") or ""))
     )
     if override:

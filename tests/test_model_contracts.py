@@ -181,6 +181,11 @@ class VersionAwareCalibrationTests(unittest.TestCase):
         self.assertEqual(calibration_for_route(astra), MODEL_HIGH_EFFORT_CALIBRATIONS["gpt-6-astra"])
         self.assertEqual(calibration_for_route(sol), HIGH_EFFORT_CALIBRATIONS["gpt"])
         self.assertNotEqual(calibration_for_route(astra), calibration_for_route(sol))
+        # The measurement arm: the block Astra would inherit if the override
+        # were removed, which is exactly Sol's block.
+        self.assertEqual(calibration_for_route(astra, family_only=True), HIGH_EFFORT_CALIBRATIONS["gpt"])
+        self.assertEqual(calibration_for_route(astra, family_only=True), calibration_for_route(sol))
+        self.assertEqual(calibration_for_route({**astra, "selected_reasoning_effort": "low"}, family_only=True), "")
         self.assertEqual(
             composition_calibration_for_model("gpt-6-astra"), MODEL_COMPOSITION_CALIBRATIONS["gpt-6-astra"]
         )

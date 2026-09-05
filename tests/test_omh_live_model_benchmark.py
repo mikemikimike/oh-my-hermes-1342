@@ -13,7 +13,7 @@ from _local_package import load_local_package
 
 load_local_package()
 
-from omh.coding.unit_prompt_protocol import HIGH_EFFORT_CALIBRATIONS  # noqa: E402
+from omh.coding.unit_prompt_protocol import HIGH_EFFORT_CALIBRATIONS, MODEL_HIGH_EFFORT_CALIBRATIONS  # noqa: E402
 
 
 BASE = Path(__file__).resolve().parents[1] / "benchmarks" / "live-model-tools" / "v1"
@@ -183,6 +183,27 @@ class OmhLiveAdapterTests(unittest.TestCase):
         self.assertIn("Verify the file exists and parses as JSON", baseline)
         self.assertIn(HIGH_EFFORT_CALIBRATIONS["deepseek"], optimized)
         self.assertEqual(module.task_digest(baseline), module.task_digest(optimized))
+
+    def test_family_condition_sends_the_inherited_block_without_the_override(self) -> None:
+        module = _load_omh_live()
+        task = "Read TARGET.txt and return its exact contents."
+        route = {
+            "selected_model": "gpt-6-astra",
+            "selected_reasoning_effort": "xhigh",
+            "model_family": "gpt",
+        }
+        override = MODEL_HIGH_EFFORT_CALIBRATIONS["gpt-6-astra"]
+        family = HIGH_EFFORT_CALIBRATIONS["gpt"]
+        prompts = {name: module.prompt_for_condition(task, route, name) for name in ("baseline", "optimized", "family")}
+        self.assertNotIn(override, prompts["baseline"])
+        self.assertNotIn(family, prompts["baseline"])
+        self.assertIn(override, prompts["optimized"])
+        self.assertNotIn(family, prompts["optimized"])
+        self.assertIn(family, prompts["family"])
+        self.assertNotIn(override, prompts["family"])
+        self.assertEqual(prompts["family"].split("\n\n", 1)[1], prompts["baseline"])
+        self.assertEqual({module.task_digest(prompt) for prompt in prompts.values()}, {module.task_digest(prompts["baseline"])})
+        self.assertEqual(module.prompt_for_condition(task, route, "unknown-condition"), prompts["baseline"])
 
     def test_snapshot_and_changed_paths_use_canonical_posix_keys(self) -> None:
         with TemporaryDirectory() as root_text:

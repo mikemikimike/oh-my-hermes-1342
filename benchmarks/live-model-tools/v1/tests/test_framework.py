@@ -163,6 +163,38 @@ class OmhBenchmarkFrameworkTests(unittest.TestCase):
             self.assertTrue(audited["ok"])
             self.assertFalse(audited["claim_permitted"])
 
+    def test_analysis_pairs_the_family_arm_against_the_override(self) -> None:
+        manifest = json.loads((BASE / "manifest.json").read_text())
+        with TemporaryDirectory() as root:
+            root_path = Path(root)
+            family = root_path / "family.jsonl"
+            optimized = root_path / "optimized.jsonl"
+            for condition, output in (("family", family), ("optimized", optimized)):
+                record = execute_one(BASE, manifest, "development", "D-RENAME", "edit", 7919, condition, output)
+                self.assertEqual(record["condition"], condition)
+            result = analyze(family, optimized, 100, 7, manifest, baseline_condition="family")
+            self.assertEqual(result["conditions"], {"baseline": "family", "optimized": "optimized"})
+            self.assertEqual(result["models"]["offline/fake-model"]["n"], 1)
+            with self.assertRaisesRegex(ValueError, "baseline file contains wrong condition"):
+                analyze(family, optimized, 100, 7, manifest)
+            default = analyze(optimized, optimized, 100, 7, manifest, baseline_condition="optimized")
+            self.assertEqual(default["conditions"], {"baseline": "optimized", "optimized": "optimized"})
+
+    def test_bench_cli_schedules_the_family_condition_offline(self) -> None:
+        with TemporaryDirectory() as root:
+            output = Path(root) / "family-runs.jsonl"
+            completed = subprocess.run(
+                [sys.executable, str(BASE / "bench.py"), "run", "--condition", "family", "--output", str(output)],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            receipt = json.loads(completed.stdout)
+            self.assertEqual((receipt["condition"], receipt["scheduled"], receipt["paid_calls_launched"]), ("family", 10, 0))
+            conditions = {json.loads(line)["condition"] for line in output.read_text().splitlines()}
+            self.assertEqual(conditions, {"family"})
+
     def test_analysis_rejects_unscheduled_model_claim_matrix(self) -> None:
         manifest = json.loads((BASE / "manifest.json").read_text())
         with TemporaryDirectory() as root:

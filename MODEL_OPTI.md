@@ -277,13 +277,15 @@ pairing so a benchmark claim can never mix in other prompt changes.
   (re-deriving settled facts, re-verifying for reassurance) is not what the
   guide describes for Astra, which is why the override exists.
 - **What OMH injects (subagent):** the user's instructions outrank skill or
-  guideline text and the numbered criteria are the complete task — carry
-  them to completion instead of pausing for sign-off on authorized work; ask
-  one focused question only when a missing input would materially change
-  the result, otherwise state the assumption and proceed; size tests to the
-  change — a reversible, low-impact edit that mirrors its implementation
-  needs no new test, and a green check is re-run only when its inputs
-  changed. Two constraint sentences; under the per-block ceiling.
+  guideline text and the numbered criteria are the complete task — nothing
+  outside them is owed; ask one focused question only when a missing input
+  would materially change the result, otherwise state the assumption and
+  proceed; size tests to the change — a reversible, low-impact edit that
+  mirrors its implementation needs no new test, and a green check is re-run
+  only when its inputs changed. Two constraint sentences; under the
+  per-block ceiling. The first sentence originally read "carry them to
+  completion instead of pausing for sign-off on work the boundary already
+  authorizes"; the 2026-09-05 measurement below is why it no longer does.
 - **What OMH injects (composer):** write the user's intent into each unit
   prompt above any skill text; delegate every unit that is independent of
   the work you keep (an undelegated independent unit is chosen latency);
@@ -317,16 +319,34 @@ pairing so a benchmark claim can never mix in other prompt changes.
   input at the default tenth). The $12.5/M cache-write rate and the 2x
   input / 1.5x output multiplier above 272K input tokens have no column in
   that table and are documented in the contract instead of flattened.
+- **Measured (2026-09-05, subagent block):** four arms on
+  `benchmarks/live-model-tools/v1`, evaluation split (30 instances, corpus
+  digest `c4ea899a…`), `hermes_current_session` path, `openai-codex` /
+  `gpt-6-astra` at `xhigh`, omh 2.0.0, Hermes 0.21.0, arm order
+  optimized → family → baseline → revised. Every arm passed 18 / 30 with
+  identical per-template results, so pass rate decided nothing. Tokens did:
+  the original override cost 1,675,942 against the inherited `gpt` block's
+  1,513,367 (+5,419 per instance, bootstrap CI95 [+1,444, +10,150], more in
+  26 / 30) and against no calibration at all (1,550,904). Hermes' own
+  session rows put it at 310 tool calls / 206 API turns versus 286 / 194 for
+  the family block, with the excess concentrated in `BUGFIX` and
+  `DIAGNOSTICS` — the model kept working on tasks it was not going to pass.
+  The "carry them to completion instead of pausing" clause was the one
+  sentence with that reading, and the block above is the revision that
+  replaces it: 1,532,241 tokens (−4,790 per instance against the original,
+  CI95 [−9,336, −1,075]; +629 against the family block, CI95 [−1,109,
+  +2,445], indistinguishable), 294 tool calls, 192 API turns, still 18 / 30.
+  Per §8 that is the "revise" outcome: the Astra-specific counters
+  (assumption over question, test sizing) stay, the clause that made the
+  model over-work is gone, and the override now costs what the block it
+  replaced costs. Full tables in the benchmark README. Not measured: the
+  composer block (no fanout in this harness), clarification and delegation
+  counts (the corpus never provokes them; #1327 is the follow-up), and any
+  claim beyond this corpus.
 - **Source:** official (the OpenAI model reference, latest-model guide,
   reasoning guide, async tool calling and steering guides, monitorability
-  evaluation, and system card, read 2026-09-04). Not yet measured: the
-  named follow-up is a same-corpus, same-effort, counterbalanced paired run
-  of the inherited `gpt` calibration against this override on
-  `benchmarks/live-model-tools/v1` (targeted manifest, one GPT family
-  entry), recording criteria pass, wall time, token usage, tool-call,
-  clarification, delegation, and verification counts, and reopened
-  criteria; a variant that measures worse than the inherited block is
-  revised or removed in the change that reports the number.
+  evaluation, and system card, read 2026-09-04), plus the 2026-09-05
+  measurement above for the first sentence's wording.
 
 ### `claude` (Fable 5.1, Mythos 5.1, Fable 5, Opus 5, Sonnet, Haiku)
 

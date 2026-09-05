@@ -21,7 +21,7 @@
     "created_at": {"type": "string"},
     "instance_id": {"type": "string"},
     "split": {"enum": ["development", "evaluation"]},
-    "condition": {"enum": ["baseline", "optimized"]},
+    "condition": {"enum": ["baseline", "optimized", "family"]},
     "harness": {"enum": ["fake", "omh"]},
     "model": {"type": ["object", "null"]},
     "task_digest": {"$ref": "#/$defs/digest"},
