@@ -33,7 +33,7 @@ class PairedRunLocalRunnerTests(unittest.TestCase):
             root = Path(raw)
             task_content = "paired task\n"
             task_file = root / "task.txt"
-            task_file.write_text(task_content, encoding="utf-8")
+            task_file.write_bytes(task_content.encode("utf-8"))
             actual_digest = hashlib.sha256(
                 task_content.encode("utf-8")
             ).hexdigest()
