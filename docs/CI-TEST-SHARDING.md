@@ -25,6 +25,37 @@ Two consequences worth stating plainly:
 - A green `aggregate` is the only signal that means "the whole suite ran".
   Reading an individual shard's green tick tells you about that slice only.
 
+## The Offline Benchmark Framework Runs in the Shards
+
+The live-model benchmark framework's own tests live under
+`benchmarks/live-model-tools/v1/tests/`, outside `tests/`, so the static
+inventory that builds the shard plan could not see them. They now run in the
+same lanes as everything else.
+
+`tests/test_live_model_benchmark_framework.py` declares one statically
+discoverable delegator per upstream case and executes the real upstream
+implementation through an explicit path load. It duplicates no assertion, so
+the delegated run exercises the upstream contract itself, including the
+paid-live authorization blocks. Nothing here requests live authorization: the
+framework's offline `fake` harness is what runs, and no provider call is made.
+
+An AST parity check compares the upstream file's declarations against this
+file's. An upstream case that is added, removed, or renamed fails loudly in the
+wrapper instead of silently dropping out of the shard plan, which is the exact
+failure this arrangement exists to prevent.
+
+Because the delegators are ordinary discoverable tests, they inherit the
+properties the rest of the suite already has: every one is assigned exactly once
+across the shards and the quarantine list, all three lanes (`test`,
+`test-windows`, `test-quarantine`) consume the same generated plan, and the
+`aggregate` job re-proves the exact-once accounting. Benchmark coverage is
+therefore gated by the same green tick as everything else, with no detached
+workflow step to keep in sync.
+
+What has been observed locally is the offline framework running green and the
+generated plan carrying each delegator exactly once. Execution on the Windows
+lane is observed in pull-request CI, from the same plan, and nowhere earlier.
+
 ## Repository Settings
 
 Read-only inspection of `rlaope/oh-my-hermes` on 2026-09-04:

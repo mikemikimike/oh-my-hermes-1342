@@ -7,6 +7,14 @@ import sys
 from pathlib import Path
 
 from ..coding_delegation import CODING_EXECUTOR_TARGETS, build_coding_delegation_payload, coding_delegation_record_payload
+from ..coding.diagnostic_execution import DiagnosticExecutionEngine
+from ..coding.fanout_final_review_hook import FinalReviewWaveEngine
+from ..coding.final_review_local_engine import (
+    FinalReviewLocalEngineConfig,
+    FinalReviewLocalEngineError,
+    HermesFinalReviewEngine,
+)
+from ..coding.local_diagnostic_engine import build_local_diagnostic_engine
 from ..coding.executor_capability_snapshots import (
     ExecutorCapabilitySnapshotError,
     build_executor_capability_snapshot,
@@ -2059,7 +2067,12 @@ def _fanout_dispatch_exit_code(summary: dict) -> int:
     return 0
 
 
-def cmd_coding_fanout_dispatch(args: argparse.Namespace) -> int:
+def cmd_coding_fanout_dispatch(
+    args: argparse.Namespace,
+    *,
+    diagnostic_engine: DiagnosticExecutionEngine | None = None,
+    final_review_engine: FinalReviewWaveEngine | None = None,
+) -> int:
     import subprocess as _subprocess
 
     from ..coding.fanout_artifacts import (
@@ -2072,6 +2085,11 @@ def cmd_coding_fanout_dispatch(args: argparse.Namespace) -> int:
 
     paths = _paths(args)
     recovery_kwargs = _failure_recovery_kwargs(args)
+    selected_diagnostic_engine = (
+        (diagnostic_engine or build_local_diagnostic_engine())
+        if args.diagnostics
+        else None
+    )
     try:
         parallelism = read_parallelism_policy(paths)
     except ValueError as exc:
@@ -2106,6 +2124,28 @@ def cmd_coding_fanout_dispatch(args: argparse.Namespace) -> int:
     integrated_worktree = (
         Path(args.integration_worktree).expanduser().resolve() if args.integration_worktree else None
     )
+    selected_final_review_engine = (
+        final_review_engine if getattr(args, "final_review", False) else None
+    )
+    if getattr(args, "final_review", False) and selected_final_review_engine is None:
+        if integrated_worktree is None or not args.integration_revision:
+            raise OmhError(
+                "--final-review requires --integration-worktree and "
+                "--integration-revision"
+            )
+        try:
+            selected_final_review_engine = HermesFinalReviewEngine(
+                FinalReviewLocalEngineConfig(
+                    worktree=integrated_worktree,
+                    goal_text=goal_text,
+                    provider=str(args.hermes_provider),
+                    model=str(args.hermes_model),
+                    reasoning=str(args.hermes_reasoning or "medium"),
+                    timeout_seconds=min(float(args.timeout), 900.0),
+                )
+            )
+        except FinalReviewLocalEngineError as exc:
+            raise OmhError(str(exc)) from exc
     repo_root = Path(args.repo_root).expanduser().resolve()
     try:
         preflight = fanout_dispatch_preflight(
@@ -2140,6 +2180,9 @@ def cmd_coding_fanout_dispatch(args: argparse.Namespace) -> int:
             goal_attempt_id=args.goal_attempt_id,
             goal_attempt_progressed=bool(args.goal_attempt_progressed),
             review_dispatch_budget=args.review_dispatch_budget,
+            diagnostic_engine=selected_diagnostic_engine,
+            final_review_engine=selected_final_review_engine,
+            emit_health_events=bool(args.health_events),
             **recovery_kwargs,
         )
         _print_json(summary)
@@ -2181,6 +2224,9 @@ def cmd_coding_fanout_dispatch(args: argparse.Namespace) -> int:
             goal_attempt_id=args.goal_attempt_id,
             goal_attempt_progressed=bool(args.goal_attempt_progressed),
             review_dispatch_budget=args.review_dispatch_budget,
+            diagnostic_engine=selected_diagnostic_engine,
+            final_review_engine=selected_final_review_engine,
+            emit_health_events=bool(args.health_events),
             **recovery_kwargs,
         )
     except ValueError as exc:
@@ -2596,14 +2642,17 @@ def _add_failure_recovery_arguments(parser) -> None:
             "the unit's owner, re-observing the provider's answer directly."
         ),
     )
-    parser.add_argument("--hermes-model", default="", help="Hermes model alias for the Hermes-subagent recovery lane.")
-    parser.add_argument("--hermes-provider", default="", help="Hermes provider alias for the Hermes-subagent recovery lane.")
-    parser.add_argument("--hermes-reasoning", default="", help="Hermes reasoning alias for the Hermes-subagent recovery lane.")
+    parser.add_argument("--hermes-model", default="", help="Hermes model alias for recovery or final-review lanes.")
+    parser.add_argument("--hermes-provider", default="", help="Hermes provider alias for recovery or final-review lanes.")
+    parser.add_argument("--hermes-reasoning", default="", help="Hermes reasoning alias for recovery or final-review lanes.")
 
 
 def _add_coding_commands(sub) -> None:
+    from .paired_run import add_coding_paired_run_command
+
     coding = sub.add_parser("coding", help="Prepare executor-neutral or tracked coding handoff artifacts.")
     coding_sub = coding.add_subparsers(dest="coding_command", required=True)
+    add_coding_paired_run_command(coding_sub)
 
     fanout = coding_sub.add_parser(
         "fanout",
@@ -2675,6 +2724,41 @@ def _add_coding_commands(sub) -> None:
         action="store_true",
         help="Run each unit's contract verification_commands in its worktree after its sidecar validates.",
     )
+    diagnostics = fanout_dispatch.add_mutually_exclusive_group()
+    diagnostics.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="Run optional allowlisted local post-GREEN diagnostics; an injected engine may override.",
+    )
+    diagnostics.add_argument(
+        "--no-diagnostics",
+        dest="diagnostics",
+        action="store_false",
+        help="Disable the optional post-GREEN diagnostic hook (the default).",
+    )
+    fanout_dispatch.set_defaults(diagnostics=False)
+    fanout_dispatch.add_argument(
+        "--final-review",
+        action="store_true",
+        help=(
+            "Run four immutable read-only Hermes review lenses after "
+            "integration GREEN."
+        ),
+    )
+    health_events = fanout_dispatch.add_mutually_exclusive_group()
+    health_events.add_argument(
+        "--health-events",
+        dest="health_events",
+        action="store_true",
+        help="Emit bounded metadata-only critical-path lifecycle evidence.",
+    )
+    health_events.add_argument(
+        "--no-health-events",
+        dest="health_events",
+        action="store_false",
+        help="Disable critical-path lifecycle evidence emission (the default).",
+    )
+    fanout_dispatch.set_defaults(health_events=False)
     fanout_dispatch.add_argument(
         "--integration-worktree",
         default="",

@@ -88,6 +88,33 @@ CLASSIFIED_SITES: tuple[ClassifiedSite, ...] = (
         "the terminal close still parses the full stdout independently of every snapshot.",
     ),
     ClassifiedSite(
+        "src/coding/diagnostic_execution_engine.py",
+        "_observe",
+        INTENTIONAL,
+        "The handler catches every interruption only to publish that exact exception to the "
+        "same-key single-flight Future before immediately re-raising it. The owner and every "
+        "waiter therefore observe the same loud programming failure instead of a deadlock or "
+        "a relabeled diagnostic result.",
+    ),
+    ClassifiedSite(
+        "src/coding/local_diagnostic_process_owner.py",
+        "start_owned_process",
+        INTENTIONAL,
+        "A Windows provider is created suspended before Job Object attachment. Any interruption "
+        "during attachment must kill and reap that not-yet-returned process before immediately "
+        "re-raising the same BaseException; otherwise cancellation could leak a suspended child. "
+        "Nothing is swallowed or relabeled.",
+    ),
+    ClassifiedSite(
+        "src/coding/paired_run_execution.py",
+        "_execute_cell",
+        INTENTIONAL,
+        "Two injected-boundary handlers in one function, classified together. An unexpected "
+        "runner failure becomes the cell's explicit CRASHED state and still reaches its cleaner; "
+        "an unexpected cleaner failure becomes CLEANUP_FAILED with cleanup_succeeded=False. "
+        "Neither can become a successful receipt or silently abort sibling-cell cleanup.",
+    ),
+    ClassifiedSite(
         "src/workflows/domain_intelligence_store_security.py",
         "_open_store_lock_descriptor",
         INTENTIONAL,
@@ -245,10 +272,10 @@ CLASSIFIED_SITES: tuple[ClassifiedSite, ...] = (
 
 # Ruff reports one hit per handler; the inventory is keyed per enclosing
 # function. `_write_candidate_batch`, `_is_catalog_question`, `pre_llm_call`,
-# and `_resume_unlocked` each hold two handlers, so the handler count is four
-# above the anchor count.
-EXPECTED_HANDLER_COUNT = 24
-EXPECTED_ANCHOR_COUNT = 20
+# `_resume_unlocked`, and `_execute_cell` each hold two handlers, so the handler
+# count is five above the anchor count.
+EXPECTED_HANDLER_COUNT = 28
+EXPECTED_ANCHOR_COUNT = 23
 
 
 class DerivedSite(NamedTuple):
