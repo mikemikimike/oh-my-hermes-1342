@@ -25,10 +25,16 @@ class LocalDiagnosticEngineTests(unittest.TestCase):
     def test_allowlisted_provider_observes_both_revisions_without_leaking_output(self) -> None:
         with TemporaryDirectory() as raw:
             root = Path(raw)
-            repo, baseline, end = self._repository(root)
-            ruff = self._fake_ruff(root)
+            repo, baseline, end = self._repository(
+                root,
+                self._fake_ruff_source(),
+            )
             engine = build_local_diagnostic_engine(
-                executable_lookup=lambda provider: str(ruff) if provider == "ruff" else None
+                executable_lookup=lambda provider: (
+                    sys.executable
+                    if provider == "ruff"
+                    else None
+                )
             )
 
             with patch.dict(os.environ, {"OMH_DIAGNOSTIC_SECRET": "top-secret"}):
@@ -95,9 +101,12 @@ class LocalDiagnosticEngineTests(unittest.TestCase):
 
         with TemporaryDirectory() as raw:
             root = Path(raw)
-            repo, _baseline, end = self._repository(root)
+            repo, _baseline, end = self._repository(
+                root,
+                self._blocking_ruff_source(),
+            )
             runner = LocalDiagnosticProviderRunner(
-                {"ruff": str(self._blocking_ruff(root))}
+                {"ruff": sys.executable}
             )
 
             observation = runner.run(
@@ -122,10 +131,13 @@ class LocalDiagnosticEngineTests(unittest.TestCase):
     def test_over_limit_provider_output_is_partial_and_never_clean(self) -> None:
         with TemporaryDirectory() as raw:
             root = Path(raw)
-            repo, baseline, end = self._repository(root)
+            repo, baseline, end = self._repository(
+                root,
+                self._noisy_ruff_source(),
+            )
             engine = build_local_diagnostic_engine(
                 executable_lookup=lambda provider: (
-                    str(self._noisy_ruff(root))
+                    sys.executable
                     if provider == "ruff"
                     else None
                 )
@@ -148,13 +160,21 @@ class LocalDiagnosticEngineTests(unittest.TestCase):
             "no_new_diagnostics_observed",
         )
 
-    def _repository(self, root: Path) -> tuple[Path, str, str]:
+    def _repository(
+        self,
+        root: Path,
+        provider_source: str | None = None,
+    ) -> tuple[Path, str, str]:
         repo = root / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         source = repo / "seed.py"
         source.write_text("value = 1\n", encoding="utf-8")
-        subprocess.run(["git", "add", "seed.py"], cwd=repo, check=True)
+        tracked = ["seed.py"]
+        if provider_source is not None:
+            (repo / "check").write_text(provider_source, encoding="utf-8")
+            tracked.append("check")
+        subprocess.run(["git", "add", *tracked], cwd=repo, check=True)
         subprocess.run(
             ["git", "-c", "user.name=test", "-c", "user.email=test@example.test", "commit", "-qm", "baseline"],
             cwd=repo,
@@ -179,68 +199,47 @@ class LocalDiagnosticEngineTests(unittest.TestCase):
             text=True,
         ).stdout.strip()
 
-    def _fake_ruff(self, root: Path) -> Path:
-        executable = root / "ruff"
-        executable.write_text(
-            "\n".join(
-                (
-                    f"#!{sys.executable}",
-                    "import json",
-                    "import os",
-                    "from pathlib import Path",
-                    "import sys",
-                    "if os.environ.get('OMH_DIAGNOSTIC_SECRET'):",
-                    "    raise SystemExit(7)",
-                    "target = next(Path(value) for value in sys.argv[1:] if value.endswith('.py'))",
-                    "rows = []",
-                    "if 'missing_name' in target.read_text(encoding='utf-8'):",
-                    "    rows.append({",
-                    "        'code': 'F821',",
-                    "        'message': 'Undefined name from source',",
-                    "        'filename': str(target),",
-                    "        'location': {'row': 1, 'column': 9},",
-                    "    })",
-                    "print(json.dumps(rows))",
-                    "raise SystemExit(1 if rows else 0)",
-                    "",
-                )
-            ),
-            encoding="utf-8",
+    def _fake_ruff_source(self) -> str:
+        return "\n".join(
+            (
+                "import json",
+                "import os",
+                "from pathlib import Path",
+                "import sys",
+                "if os.environ.get('OMH_DIAGNOSTIC_SECRET'):",
+                "    raise SystemExit(7)",
+                "target = next(Path(value) for value in sys.argv[1:] if value.endswith('.py'))",
+                "rows = []",
+                "if 'missing_name' in target.read_text(encoding='utf-8'):",
+                "    rows.append({",
+                "        'code': 'F821',",
+                "        'message': 'Undefined name from source',",
+                "        'filename': str(target),",
+                "        'location': {'row': 1, 'column': 9},",
+                "    })",
+                "print(json.dumps(rows))",
+                "raise SystemExit(1 if rows else 0)",
+                "",
+            )
         )
-        executable.chmod(0o755)
-        return executable
 
-    def _blocking_ruff(self, root: Path) -> Path:
-        executable = root / "ruff-blocking"
-        executable.write_text(
-            "\n".join(
-                (
-                    f"#!{sys.executable}",
-                    "import time",
-                    "while True:",
-                    "    time.sleep(60)",
-                    "",
-                )
-            ),
-            encoding="utf-8",
+    def _blocking_ruff_source(self) -> str:
+        return "\n".join(
+            (
+                "import time",
+                "while True:",
+                "    time.sleep(60)",
+                "",
+            )
         )
-        executable.chmod(0o755)
-        return executable
 
-    def _noisy_ruff(self, root: Path) -> Path:
-        executable = root / "ruff-noisy"
-        executable.write_text(
-            "\n".join(
-                (
-                    f"#!{sys.executable}",
-                    "print('x' * 3_000_000)",
-                    "",
-                )
-            ),
-            encoding="utf-8",
+    def _noisy_ruff_source(self) -> str:
+        return "\n".join(
+            (
+                "print('x' * 3_000_000)",
+                "",
+            )
         )
-        executable.chmod(0o755)
-        return executable
 
 if __name__ == "__main__":
     unittest.main()
