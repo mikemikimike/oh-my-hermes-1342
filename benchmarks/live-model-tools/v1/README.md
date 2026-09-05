@@ -173,3 +173,71 @@ workspace-pinned `TERMINAL_CWD`, and tool byproducts (`.venv`, `.pytest_cache`,
 
 Results describe this pinned corpus, OMH version, Hermes version, model IDs,
 and conditions only. They do not establish universal model superiority.
+
+### 2026-09-05 `gpt-6-astra` four-arm evaluation (issue #1310)
+
+The first exact-model override (`MODEL_HIGH_EFFORT_CALIBRATIONS["gpt-6-astra"]`,
+#1307) measured against the block it replaced. Same pinned evaluation corpus
+(30 instances, digest `c4ea899a8e727fcc531776e56306ff0e83d129e2248fe4362614b3d186fa7b33`),
+`hermes_current_session` path, `openai-codex` / `gpt-6-astra` at `xhigh`,
+omh 2.0.0, Hermes Agent 0.21.0, targeted manifest with that one live entry.
+Arms ran sequentially in the order optimized → family → baseline → revised
+(not counterbalanced within an arm; the harness runs one condition per
+invocation). Only validator passes count as success.
+
+| Arm | What the prompt carries | Passed | Total tokens | Mean tokens | Tool calls | API turns |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| baseline | bare contract, no calibration | 18 / 30 | 1,550,904 | 51,697 | 310 | 203 |
+| family | inherited `HIGH_EFFORT_CALIBRATIONS["gpt"]` | 18 / 30 | 1,513,367 | 50,446 | 286 | 194 |
+| optimized | original `gpt-6-astra` override (#1307 wording) | 18 / 30 | 1,675,942 | 55,865 | 310 | 206 |
+| revised | `gpt-6-astra` override as shipped after this run | 18 / 30 | 1,532,241 | 51,075 | 294 | 192 |
+
+Tool calls and API turns are not harness metrics on this path (the usage
+file carries neither); they were read afterwards from the Hermes `sessions`
+table for the sessions each arm created, joined by run order, and are
+reported as out-of-harness observations.
+
+Per template (passes out of 3 / tokens over the 3 seeds):
+
+| Template (class) | baseline | family | optimized | revised |
+| --- | ---: | ---: | ---: | ---: |
+| RENAME (edit) | 3 / 159,187 | 3 / 159,894 | 3 / 163,757 | 3 / 163,468 |
+| BUGFIX (edit) | 3 / 228,497 | 3 / 189,869 | 3 / 233,835 | 3 / 205,791 |
+| PRECEDENCE (read) | 0 / 106,910 | 0 / 109,283 | 0 / 109,617 | 0 / 109,779 |
+| CALLFLOW (read) | 0 / 161,874 | 0 / 174,767 | 0 / 165,916 | 0 / 163,897 |
+| REFERENCES (search) | 3 / 160,587 | 3 / 156,328 | 3 / 154,761 | 3 / 161,001 |
+| PREDICATE (search) | 3 / 133,311 | 3 / 119,482 | 3 / 120,176 | 3 / 119,834 |
+| DEFINITION (lsp) | 0 / 156,716 | 0 / 149,832 | 0 / 172,126 | 0 / 148,439 |
+| DIAGNOSTICS (lsp) | 0 / 233,511 | 0 / 227,993 | 0 / 322,645 | 0 / 227,300 |
+| SCALE (routing) | 3 / 116,522 | 3 / 124,772 | 3 / 128,995 | 3 / 128,785 |
+| EXPLICIT (routing) | 3 / 93,789 | 3 / 101,147 | 3 / 104,114 | 3 / 103,947 |
+
+Paired token deltas per instance (10,000-sample bootstrap, seed 20260813):
+
+| Pair (b − a) | Mean Δ tokens | CI95 | b > a |
+| --- | ---: | ---: | ---: |
+| family − baseline | −1,251 | [−3,763, +1,300] | 15 / 30 |
+| optimized − baseline | +4,168 | [−324, +9,100] | 23 / 30 |
+| optimized − family | +5,419 | [+1,444, +10,150] | 26 / 30 |
+| revised − family | +629 | [−1,109, +2,445] | 24 / 30 |
+| revised − optimized | −4,790 | [−9,336, −1,075] | 7 / 30 |
+
+Pass rate tied across every arm (McNemar p = 1.0 for both `analyze.py`
+pairs), so the decision rests on cost. The original override spent more than
+the block it replaced, with the excess in `BUGFIX` and `DIAGNOSTICS`: the
+model kept working on instances it did not pass. Its first sentence ("carry
+them to completion instead of pausing for sign-off") was the one clause with
+that reading; the revised block replaces it with "nothing outside them is
+owed", keeps the assumption-over-question and test-sizing sentences, and
+lands within the family block's cost. That is the wording now in
+`unit_prompt_protocol.py`; the `optimized` row is the wording it replaced.
+
+The read and lsp classes scored 0 in every arm, as they did for every model
+in the 2026-08-14 run; that is a property of those templates against the
+current validators, not of the calibration. The traits the Astra override was
+written for (clarifying questions, delegation, test breadth) are never
+provoked by this corpus; #1327 tracks the templates and counters that would
+measure them.
+
+Results describe this pinned corpus, OMH version, Hermes version, model IDs,
+and conditions only. They do not establish universal model superiority.

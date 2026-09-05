@@ -340,11 +340,10 @@ MODEL_HIGH_EFFORT_CALIBRATIONS: Final[dict[str, str]] = {
     # are not restated. No monitoring language, no chain-of-thought requests.
     "gpt-6-astra": (
         "High-effort calibration: the user's instructions outrank any skill or guideline text, and "
-        "the numbered criteria are the complete task — carry them to completion instead of pausing "
-        "for sign-off on work the boundary already authorizes. Ask one focused question only when a "
-        "missing input would materially change the result; otherwise state the assumption and "
-        "proceed. Size tests to the change: a reversible, low-impact edit that mirrors its "
-        "implementation needs no new test, and a green check is re-run only when its inputs changed."
+        "the numbered criteria are the complete task — nothing outside them is owed. Ask one focused "
+        "question only when a missing input would materially change the result; otherwise state the "
+        "assumption and proceed. Size tests to the change: a reversible, low-impact edit that mirrors "
+        "its implementation needs no new test, and a green check is re-run only when its inputs changed."
     ),
 }
 MODEL_COMPOSITION_CALIBRATIONS: Final[dict[str, str]] = {
