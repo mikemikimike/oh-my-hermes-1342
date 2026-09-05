@@ -539,10 +539,13 @@ Rules:
   weighted, and carrying its own evidence. The score is exactly the sum of the
   listed signals, so a tier is always explainable from the payload alone.
   Signals: `architecture_keywords` (+3), `impact_system_wide` (+3),
-  `subtasks_many` (+4), `risk_keywords` (+2), `debugging_keywords` (+2),
-  `fanout_intent` (+2), `cross_file` (+2), `message_length` (+1/+2),
-  `routed_skill_class` (+1/+2), and `simple_request` (−2, the only signal that
-  subtracts). The tier names a model *class* — a `MODEL_CATEGORIES` member —
+  `subtasks_many` (+4), `exhaustive_search` (+4: "find every reference / all
+  usages / every occurrence" reaches `standard` on its own, because recall is
+  the whole task and the 2026-09-05 `live-model-tools` run showed the `quick`
+  head tying the flagship on every class except that one), `risk_keywords`
+  (+2), `debugging_keywords` (+2), `fanout_intent` (+2), `cross_file` (+2),
+  `message_length` (+1/+2), `routed_skill_class` (+1/+2), and
+  `simple_request` (−2, the only signal that subtracts). The tier names a model *class* — a `MODEL_CATEGORIES` member —
   which resolves through the user's own
   `<omh-home>/routing/model-chains.json` chains, so no model id is ever
   hardcoded; a class the user's chains do not cover is named as
