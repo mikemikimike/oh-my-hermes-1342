@@ -77,7 +77,11 @@ writes a metadata-only record with a redacted failure classification and receipt
 raw stdout, stderr, prompts, credentials, and config remain unpersisted.
 
 Run baseline and optimized matrices separately so every condition uses the same
-pinned instances:
+pinned instances. A third condition, `family`, sends the block the model would
+inherit from its family with any exact-model override skipped; it exists so an
+override (for example `gpt-6-astra` over the `gpt` block) is measured against
+what it replaced and not only against no calibration. Pair it with `analyze.py
+--baseline-condition family` so the override is the `optimized` side:
 
 ```bash
 python benchmarks/live-model-tools/v1/bench.py run \

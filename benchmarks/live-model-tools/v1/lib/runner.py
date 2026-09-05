@@ -71,8 +71,8 @@ def execute_one(
     hermes_executable: str = "hermes",
     current_session_provider: str | None = None,
 ) -> dict[str, Any]:
-    if condition not in {"baseline", "optimized"}:
-        raise ValueError("condition must be baseline or optimized")
+    if condition not in {"baseline", "optimized", "family"}:
+        raise ValueError("condition must be baseline, optimized, or family")
     with TemporaryDirectory(prefix="omh-bench-") as root_text:
         root = Path(root_text)
         workspace = root / "workspace"

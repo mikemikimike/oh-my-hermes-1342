@@ -176,6 +176,24 @@ def prompt_pair(task: str, route: Mapping[str, Any]) -> tuple[str, str]:
     return common, optimized
 
 
+def prompt_for_condition(task: str, route: Mapping[str, Any], condition: str) -> str:
+    """The prompt one benchmark condition sends; every condition shares one task.
+
+    `baseline` is the bare contract, `optimized` adds the calibration the
+    route resolves (an exact-model override when one exists), and `family`
+    adds the block the model would inherit from its family with the override
+    skipped. `family` exists so an exact-model override can be measured
+    against what it replaced, not only against no calibration at all.
+    """
+    baseline, optimized = prompt_pair(task, route)
+    if condition == "optimized":
+        return optimized
+    if condition == "family":
+        calibration = calibration_for_route(route, family_only=True)
+        return baseline if not calibration else f"{calibration}\n\n{baseline}"
+    return baseline
+
+
 def task_digest(prompt: str) -> str:
     try:
         task = prompt.split(_TASK_START, 1)[1].split(_TASK_END, 1)[0]
@@ -229,8 +247,7 @@ def run_trial(
     if route_completed.returncode:
         raise RuntimeError(f"OMH model route failed with exit {route_completed.returncode}")
     route = json.loads(route_completed.stdout)
-    baseline, optimized = prompt_pair(task, route)
-    prompt = optimized if condition == "optimized" else baseline
+    prompt = prompt_for_condition(task, route, condition)
     completed = subprocess.run(
         _platform_argv(dispatch_argv(
             omh_executable,
@@ -335,8 +352,7 @@ def run_current_session_trial(
             kind="route_protocol",
             classification="adapter_protocol_error",
         )
-    baseline, optimized = prompt_pair(task, route)
-    prompt = optimized if condition == "optimized" else baseline
+    prompt = prompt_for_condition(task, route, condition)
     with TemporaryDirectory(prefix="omh-current-session-usage-") as usage_root:
         usage_file = Path(usage_root) / "usage.json"
         try:

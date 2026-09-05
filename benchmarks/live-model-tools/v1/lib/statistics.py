@@ -91,9 +91,16 @@ def analyze(
     repetitions: int,
     seed: int,
     manifest: dict[str, Any],
+    *,
+    baseline_condition: str = "baseline",
+    optimized_condition: str = "optimized",
 ) -> dict[str, Any]:
-    baseline = _indexed(read_jsonl(baseline_path), "baseline")
-    optimized = _indexed(read_jsonl(optimized_path), "optimized")
+    # The two files are compared positionally; the condition each must carry
+    # is a parameter so an exact-model override (`optimized`) can be paired
+    # against the family block it replaced (`family`) as well as against the
+    # bare contract (`baseline`).
+    baseline = _indexed(read_jsonl(baseline_path), baseline_condition)
+    optimized = _indexed(read_jsonl(optimized_path), optimized_condition)
     if set(baseline) != set(optimized):
         raise ValueError("baseline and optimized coverage differ")
     for key in baseline:
@@ -156,6 +163,7 @@ def analyze(
     return {
         "schema_version": "omh_live_model_tool_analysis/v1",
         "analysis_seed": seed,
+        "conditions": {"baseline": baseline_condition, "optimized": optimized_condition},
         "models": models,
         "holm": holm(pvalues),
         "claim_boundary": manifest["claim_boundary"],

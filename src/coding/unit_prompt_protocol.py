@@ -447,20 +447,26 @@ def completion_criteria_for_unit(unit: Mapping[str, Any]) -> list[str]:
     return criteria
 
 
-def calibration_for_route(model_route: Mapping[str, Any] | None) -> str:
+def calibration_for_route(model_route: Mapping[str, Any] | None, *, family_only: bool = False) -> str:
     """Return the high-effort calibration block for a routed unit, or ''.
 
     Selected only when the route's effective reasoning effort is in the high
     tier; an exact-model override on the recorded `selected_model` wins, then
     family comes from the already-recorded `model_family` (falling back to
     generic for unknown/blank families).
+
+    `family_only=True` skips the exact-model override and returns the block
+    the model would inherit from its family. That is the measurement arm
+    `docs/MODEL-ONBOARDING.md` §8 asks for when an override ships: the
+    override is kept only if it measures at least as well as the inherited
+    block on the same corpus. Production callers never pass it.
     """
     if not isinstance(model_route, Mapping):
         return ""
     effort = str(model_route.get("selected_reasoning_effort", "") or "").casefold()
     if effort not in HIGH_EFFORT_TIER:
         return ""
-    override = MODEL_HIGH_EFFORT_CALIBRATIONS.get(
+    override = None if family_only else MODEL_HIGH_EFFORT_CALIBRATIONS.get(
         contract_model_id(str(model_route.get("selected_model", "") or ""))
     )
     if override:
