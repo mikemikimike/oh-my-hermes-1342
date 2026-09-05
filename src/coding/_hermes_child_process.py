@@ -195,6 +195,8 @@ def _terminate_windows_process_tree(
     grace: float,
     first_signal: int,
 ) -> tuple[tuple[int, ...], bool]:
+    if process.poll() is not None:
+        return (), True
     sent = [first_signal]
     try:
         subprocess.run(

@@ -31,6 +31,10 @@ requires_posix = unittest.skipUnless(
     os.name == "posix",
     "exercises POSIX-only process or filesystem semantics",
 )
+requires_windows = unittest.skipUnless(
+    os.name == "nt",
+    "exercises Windows-only process or filesystem semantics",
+)
 requires_posix_permissions = unittest.skipUnless(
     os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() != 0,
     "POSIX permission bits do not restrict root and do not exist off POSIX",

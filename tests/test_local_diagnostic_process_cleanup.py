@@ -11,16 +11,18 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from _local_package import load_local_package
-from _platform_support import requires_posix
+from _platform_support import requires_posix, requires_windows
 
 load_local_package()
 
 from omh.coding.diagnostic_execution import DiagnosticExecutionRequest  # noqa: E402
+from omh.coding._hermes_child_process import process_absent  # noqa: E402
 from omh.coding.local_diagnostic_engine import build_local_diagnostic_engine  # noqa: E402
+from omh.coding.local_diagnostic_process_owner import start_owned_process  # noqa: E402
 
 
-@requires_posix
 class LocalDiagnosticProcessCleanupTests(unittest.TestCase):
+    @requires_posix
     def test_successful_provider_reaps_background_child_group(self) -> None:
         with TemporaryDirectory() as raw:
             root = Path(raw)
@@ -63,6 +65,40 @@ class LocalDiagnosticProcessCleanupTests(unittest.TestCase):
         self.assertEqual(result.status, "ok")
         self.assertEqual(len(pids), 2)
         self.assertEqual(alive, [])
+
+    @requires_windows
+    def test_windows_job_reaps_child_after_successful_leader_exit(self) -> None:
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            pid_file = root / "child.pid"
+            code = "\n".join(
+                (
+                    "from pathlib import Path",
+                    "import subprocess",
+                    "import sys",
+                    "child = subprocess.Popen(",
+                    "    [sys.executable, '-c', 'import time; time.sleep(60)'],",
+                    "    stdin=subprocess.DEVNULL,",
+                    "    stdout=subprocess.DEVNULL,",
+                    "    stderr=subprocess.DEVNULL,",
+                    ")",
+                    f"Path({str(pid_file)!r}).write_text(str(child.pid), encoding='utf-8')",
+                )
+            )
+            process, owner = start_owned_process(
+                [sys.executable, "-c", code],
+                cwd=root,
+                env=dict(os.environ),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            process.wait(timeout=10)
+            child_pid = int(pid_file.read_text(encoding="utf-8"))
+
+            cleanup_verified = owner.terminate(signal.SIGTERM)
+
+        self.assertTrue(cleanup_verified)
+        self.assertTrue(process_absent(child_pid))
 
     def _repository(self, root: Path) -> tuple[Path, str, str]:
         repo = root / "repo"

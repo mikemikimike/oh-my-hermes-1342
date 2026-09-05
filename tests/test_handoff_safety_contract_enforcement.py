@@ -156,6 +156,11 @@ PROCESS_SPAWN_ALLOWLIST: dict[str, str] = {
         "materializes/removes detached fixed-revision worktrees and starts only the closed local "
         "pyright/basedpyright/ruff command map with bounded output, time, and environment."
     ),
+    "src/coding/local_diagnostic_process_owner.py": (
+        "private lifecycle boundary reached only by the explicit `omh coding fanout dispatch "
+        "--diagnostics` provider bridge; starts the same closed provider argv suspended on "
+        "Windows, binds it to a kill-on-close Job Object, then resumes it."
+    ),
     "src/coding/final_review_worktree.py": (
         "explicit `omh coding fanout dispatch --final-review`; creates/removes disposable "
         "detached review worktrees and runs only bounded local Git identity/status probes."

@@ -97,6 +97,15 @@ CLASSIFIED_SITES: tuple[ClassifiedSite, ...] = (
         "a relabeled diagnostic result.",
     ),
     ClassifiedSite(
+        "src/coding/local_diagnostic_process_owner.py",
+        "start_owned_process",
+        INTENTIONAL,
+        "A Windows provider is created suspended before Job Object attachment. Any interruption "
+        "during attachment must kill and reap that not-yet-returned process before immediately "
+        "re-raising the same BaseException; otherwise cancellation could leak a suspended child. "
+        "Nothing is swallowed or relabeled.",
+    ),
+    ClassifiedSite(
         "src/coding/paired_run_execution.py",
         "_execute_cell",
         INTENTIONAL,
@@ -265,8 +274,8 @@ CLASSIFIED_SITES: tuple[ClassifiedSite, ...] = (
 # function. `_write_candidate_batch`, `_is_catalog_question`, `pre_llm_call`,
 # `_resume_unlocked`, and `_execute_cell` each hold two handlers, so the handler
 # count is five above the anchor count.
-EXPECTED_HANDLER_COUNT = 27
-EXPECTED_ANCHOR_COUNT = 22
+EXPECTED_HANDLER_COUNT = 28
+EXPECTED_ANCHOR_COUNT = 23
 
 
 class DerivedSite(NamedTuple):

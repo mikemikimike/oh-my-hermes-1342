@@ -144,7 +144,9 @@ PR without the chat history.
   strips messages and absolute paths, redacts the child environment, caps
   concurrency/time/output, always reaps the provider's complete process tree,
   and removes every temporary worktree. No provider is installed or started
-  unless the operator types the flag.
+  unless the operator types the flag. On Windows the provider starts suspended,
+  enters a kill-on-close Job Object, and resumes only after ownership succeeds;
+  clean evidence requires the Job Object to report zero active processes.
 - No Hermes core patching.
 - Runtime artifacts are local, deterministic, schema-versioned, and
   metadata-only by default.

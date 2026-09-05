@@ -12,11 +12,11 @@ from tempfile import TemporaryDirectory
 from threading import Event, Lock, Thread
 from typing import Iterator
 
-from ._hermes_child_process import terminate_process_group
 from .diagnostic_execution import CancellationSignal, ProviderObservation
 from .diagnostic_providers import GLOBAL_MAX_DIAGNOSTICS_PER_CHECK
 from .local_diagnostic_capture import DiagnosticPipeDrainer
 from .local_diagnostic_parsing import parse_local_diagnostics
+from .local_diagnostic_process_owner import ProcessTreeOwner, start_owned_process
 
 
 _COMMAND_ARGS: dict[str, tuple[str, ...]] = {
@@ -95,13 +95,12 @@ class LocalDiagnosticProviderRunner:
         timeout_ms: int,
         cancelled: CancellationSignal | None,
     ) -> ProviderObservation:
-        process = subprocess.Popen(
+        process, process_owner = start_owned_process(
             argv,
             cwd=snapshot,
             env=_diagnostic_environment(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            start_new_session=os.name != "nt",
         )
         if process.stdout is None or process.stderr is None:
             raise OSError("local diagnostic subprocess pipes were unavailable")
@@ -121,7 +120,12 @@ class LocalDiagnosticProviderRunner:
         cancelled_during_run = Event()
         watcher = Thread(
             target=_watch_cancellation,
-            args=(cancelled, process, stopped, cancelled_during_run),
+            args=(
+                cancelled,
+                process_owner,
+                stopped,
+                cancelled_during_run,
+            ),
             daemon=True,
         )
         watcher.start()
@@ -138,11 +142,7 @@ class LocalDiagnosticProviderRunner:
         finally:
             stopped.set()
             watcher.join(timeout=3)
-            _signals, process_group_clean = terminate_process_group(
-                process,
-                _TERMINATE_GRACE_SECONDS,
-                cleanup_signal,
-            )
+            process_group_clean = process_owner.terminate(cleanup_signal)
             stdout_capture = stdout.finish(1)
             stderr_capture = stderr.finish(1)
         if not process_group_clean:
@@ -171,7 +171,7 @@ class LocalDiagnosticProviderRunner:
 
 def _watch_cancellation(
     cancelled: CancellationSignal | None,
-    process: subprocess.Popen[bytes],
+    process_owner: ProcessTreeOwner,
     stopped: Event,
     cancelled_during_run: Event,
 ) -> None:
@@ -180,11 +180,7 @@ def _watch_cancellation(
     while not stopped.wait(0.05):
         if cancelled.is_set():
             cancelled_during_run.set()
-            terminate_process_group(
-                process,
-                _TERMINATE_GRACE_SECONDS,
-                signal.SIGTERM,
-            )
+            process_owner.terminate(signal.SIGTERM)
             return
 
 
