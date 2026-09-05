@@ -129,7 +129,7 @@ class PairedRunLocalRunnerTests(unittest.TestCase):
             revision = _git(repo, "rev-parse", "HEAD")
             task_content = "PRIVATE_PAIRED_TASK_1295\n"
             task_file = root / "task-a.txt"
-            task_file.write_text(task_content, encoding="utf-8")
+            task_file.write_bytes(task_content.encode("utf-8"))
             digest = hashlib.sha256(task_content.encode("utf-8")).hexdigest()
             task = TaskSpec("task-a", "criteria-a", digest)
             request = PairedRunRequest(
