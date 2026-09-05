@@ -145,6 +145,22 @@ class SafetyAndEvaluationTests(unittest.TestCase):
             with self.subTest(content=content):
                 self.assertEqual(governance.classify_memory_admission(content)["status"], "safe")
         self.assertEqual(governance.classify_memory_admission("token-based auth uses rotating tokens")["status"], "safe")
+        self.assertEqual(governance.classify_memory_admission("npm-package-name-with-long-suffix")["status"], "safe")
+        self.assertEqual(governance.classify_memory_admission("ghu_" + "a" * 36)["status"], "blocked")
+        self.assertEqual(governance.classify_memory_admission("sha256=" + "a" * 64)["status"], "safe")
+        self.assertEqual(governance.classify_memory_admission("0f" * 20)["status"], "safe")
+        self.assertEqual(governance.classify_memory_admission("550e8400-e29b-41d4-a716-446655440000")["status"], "safe")
+        self.assertEqual(governance.classify_memory_admission("LongCamelCaseProjectIdentifierValue")["status"], "safe")
+        for identifier in (
+            "project-2026-09-05-abcdef1234567890",
+            "repo_20260905_build_123456789012345",
+        ):
+            with self.subTest(identifier=identifier):
+                self.assertEqual(governance.classify_memory_admission(identifier)["status"], "safe")
+        self.assertEqual(
+            governance.classify_memory_admission("token_20260905_build_123456789012345")["status"],
+            "needs_review",
+        )
 
     def test_bare_credential_shapes_are_blocked_and_unknown_opaque_values_need_review(self) -> None:
         aws = "AK" + "IA" + "A" * 16
@@ -173,6 +189,20 @@ class SafetyAndEvaluationTests(unittest.TestCase):
         unknown = "credential: " + "Ab3_" * 12
         self.assertEqual(governance.classify_memory_admission(unknown)["status"], "needs_review")
         self.assertEqual(governance.classify_memory_admission("Ab3_" * 12)["status"], "needs_review")
+        self.assertEqual(governance.classify_memory_admission("AbC-" * 10)["status"], "needs_review")
+
+    def test_replay_rescans_source_metadata_and_tags(self) -> None:
+        for field, value, reason in (
+            ("source", "ghu_" + "a" * 36, "safety_blocked_in_source"),
+            ("source_ref", "ghu_" + "a" * 36, "safety_blocked_in_source_ref"),
+            ("tags", ["AbC-" * 10], "safety_needs_review_in_tags"),
+        ):
+            with self.subTest(field=field):
+                artifact, review = _approved_artifact()
+                artifact[field] = value
+                result = _evaluate(artifact, review)
+                self.assertFalse(result["eligible"])
+                self.assertEqual(result["reason_code"], reason)
 
         for content in (
             "token-based parsing",

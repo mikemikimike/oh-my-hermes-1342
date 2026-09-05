@@ -137,6 +137,7 @@ class MemoryContractTests(unittest.TestCase):
         credentials = (
             AWS_ACCESS_KEY_ID,
             "gh" + "p_" + "a" * 36,
+            "gh" + "u_" + "a" * 36,
             "sk" + "-" + "a" * 48,
             "https://user:pass@example.com",
             "-----BEGIN PRIVATE KEY-----",
@@ -165,6 +166,51 @@ class MemoryContractTests(unittest.TestCase):
                 rejected = reject_project_memory_candidate(paths, candidate["candidate_id"], reason=f"blocked {credential}")
                 self.assertNotIn(credential, json.dumps(rejected, sort_keys=True))
                 self.assertFalse((paths.memory_dir / "records").exists())
+
+    def test_project_memory_classifies_original_tag_case_and_redacts_unknown_opaque_values(self) -> None:
+        opaque_tag = "AbC-" * 10
+        with TemporaryDirectory() as tmp:
+            paths = resolve_paths(Path(tmp) / ".omh", Path(tmp) / ".hermes")
+            captured = capture_project_memory_candidate(
+                paths,
+                "A normal project note",
+                tags=[opaque_tag],
+            )
+            candidate = captured["candidate"]
+            self.assertEqual(candidate["safety"]["status"], "needs_review")
+            self.assertNotIn(opaque_tag, json.dumps(captured, sort_keys=True))
+            self.assertEqual(candidate["tags"], ["[redacted]"])
+
+    def test_project_memory_redacts_needs_review_values_before_candidate_and_review(self) -> None:
+        opaque_value = "Ab3_" * 12
+        with TemporaryDirectory() as tmp:
+            paths = resolve_paths(Path(tmp) / ".omh", Path(tmp) / ".hermes")
+            captured = capture_project_memory_candidate(
+                paths,
+                f"Observed {opaque_value}",
+                source=opaque_value,
+                source_ref=opaque_value,
+            )
+            self.assertEqual(captured["candidate"]["safety"]["status"], "needs_review")
+            self.assertNotIn(opaque_value, json.dumps(captured, sort_keys=True))
+            self.assertNotIn(opaque_value, json.dumps(build_project_memory_review(paths), sort_keys=True))
+
+    def test_legacy_record_with_credential_in_source_is_excluded_from_recall(self) -> None:
+        credential = "ghu_" + "a" * 36
+        with TemporaryDirectory() as tmp:
+            paths = resolve_paths(Path(tmp) / ".omh", Path(tmp) / ".hermes")
+            captured = capture_project_memory_candidate(paths, "Safe release note", tags=["release"])
+            approved = approve_project_memory_candidate(paths, captured["candidate"]["candidate_id"])
+            record = approved["record"]
+            record_path = paths.memory_dir / "records" / f"{record['record_id']}.json"
+            record["source"] = credential
+            record_path.write_text(json.dumps(record), encoding="utf-8")
+
+            recall = build_project_memory_recall_pack(paths, "release")
+            self.assertEqual(recall["included_records"], [])
+            excluded = next(item for item in recall["excluded_records"] if item["record_id"] == record["record_id"])
+            self.assertEqual(excluded["reason"], "safety_blocked_in_source")
+            self.assertNotIn(credential, json.dumps(recall, sort_keys=True))
 
     def test_project_memory_auto_safe_policy_auto_approves_safe_candidates(self) -> None:
         with TemporaryDirectory() as tmp:
